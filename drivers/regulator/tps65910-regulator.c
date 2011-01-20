@@ -161,7 +161,7 @@ static struct tps_info tps65910_regs[] = {
 	{
 		.name = "VDD1",
 		.min_uV = 600000,
-		.max_uV = 4500000,
+		.max_uV = 1500000,
 		.table_len = ARRAY_SIZE(VDD1_2_VSEL_table),
 		.table = VDD1_2_VSEL_table,
 	},
@@ -485,6 +485,9 @@ static int tps65910_get_voltage(struct regulator_dev *dev)
 	case tps65910_VDD1:
 	case tps65910_VDD2:
 		value &= 0x3f; // TODO MASK MACRO
+		if(value > 75) value = 75;
+		if(value < 3) value = 3;
+		value -= 3;
 		break;
 	case tps65910_VDD3:
 		return 5 * 1000 * 1000;
@@ -504,13 +507,17 @@ static int tps65910_get_voltage(struct regulator_dev *dev)
 		return -EINVAL;
 	}
 
-	voltage = pmic->info[id]->table[value] * 1000;
+	if ((id == tps65910_VDD1) || id == tps65910_VDD2)
+		voltage = pmic->info[id]->table[value] * 100;
+	else
+		voltage = pmic->info[id]->table[value] * 1000;
 
 	/* VDIG1 and VDIG2 have a multiplier */
 	if (id == tps65910_VDIG1_REG || id == tps65910_VDIG2_REG) {
 		if (pmic->info[id]->vmult)
 			voltage *= pmic->info[id]->vmult;
 	}
+
 	return voltage;
 }
 
@@ -531,7 +538,12 @@ static int tps65910_set_voltage(struct regulator_dev *dev,
 	/* find requested voltage in table */
 	for (vsel = 0; vsel < pmic->info[id]->table_len; vsel++) {
 		int mV = pmic->info[id]->table[vsel];
-		int uV = mV * 1000;
+		int uV;
+
+		if ((id == tps65910_VDD1) || id == tps65910_VDD2)
+			uV = mV * 100;
+		else
+			uV = mV * 1000;
 
 		/* Break at the first in-range value */
 		if (min_uV <= uV && uV <= max_uV)
@@ -584,6 +596,8 @@ static int tps65910_list_voltage(struct regulator_dev *dev,
 
 	if (selector >= pmic->info[id]->table_len)
 		return -EINVAL;
+	else if ((id == tps65910_VDD1) || (id == tps65910_VDD2))
+		voltage = pmic->info[id]->table[selector] * 100;
 	else
 		voltage = pmic->info[id]->table[selector] * 1000;
 
@@ -592,6 +606,7 @@ static int tps65910_list_voltage(struct regulator_dev *dev,
 		if (pmic->info[id]->vmult)
 			voltage *= pmic->info[id]->vmult;
 	}
+
 	return voltage;
 }
 
