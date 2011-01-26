@@ -67,10 +67,10 @@ static int tps65910_i2c_write(struct tps65910 *tps65910, char reg,
 {
 	struct i2c_client *i2c = tps65910->i2c_client;
 	/* we add 1 byte for device register */
-	u8 msg[TPS6591X_MAX_REGISTER + 1];
+	u8 msg[TPS65910_MAX_REGISTER + 1];
 	int ret;
 
-	if (bytes > (TPS6591X_MAX_REGISTER + 1))
+	if (bytes > (TPS65910_MAX_REGISTER + 1))
 		return -EINVAL;
 
 	msg[0] = reg;
