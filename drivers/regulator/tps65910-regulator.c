@@ -41,20 +41,6 @@
 
 #define tps65910_NUM_REGULATOR		13
 
-#define tps65910_VRTC_REG	0x1e
-#define tps65910_VIO_REG	0x20
-#define tps65910_VDD1_REG	0x21
-#define tps65910_VDD2_REG	0x24
-#define tps65910_VDD3_REG	0x27
-#define tps65910_VDIG1_REG	0x30
-#define tps65910_VDIG2_REG	0x31
-#define tps65910_VAUX1_REG	0x32
-#define tps65910_VAUX2_REG	0x33
-#define tps65910_VAUX33_REG	0x34
-#define tps65910_VMMC_REG	0x35
-#define tps65910_VPLL_REG	0x36
-#define tps65910_VDAC_REG	0x37
-
 #define tps65910_SUPPLY_STATE_ENABLED	0x1
 #define tps65910_SUPPLY_MODE_SLEEP	0x2
 
@@ -76,6 +62,8 @@ static const u16 VDD1_2_VSEL_table[] = {
 	14000, 14125, 14250, 14375, 14500, 14625, 14750, 14875,
 	15000,
 };
+
+#define DCDC_TABLE_SIZE ARRAY_SIZE(VDD1_2_VSEL_table)
 
 /* supported VIO voltages in milivolts */
 static const u16 VDD3_VSEL_table[] = {
@@ -122,29 +110,12 @@ static const u16 VMMC_VSEL_table[] = {
 	1800, 2800, 3000, 3300,
 };
 
-static unsigned int num_voltages[] = {
-	0, /* VRTC */
-	ARRAY_SIZE(VIO_VSEL_table),
-	ARRAY_SIZE(VDD1_2_VSEL_table),
-	ARRAY_SIZE(VDD1_2_VSEL_table),
-	ARRAY_SIZE(VDD3_VSEL_table),
-	ARRAY_SIZE(VDIG1_VSEL_table),
-	ARRAY_SIZE(VDIG2_VSEL_table),
-	ARRAY_SIZE(VPLL_VSEL_table),
-	ARRAY_SIZE(VDAC_VSEL_table),
-	ARRAY_SIZE(VAUX1_VSEL_table),
-	ARRAY_SIZE(VAUX2_VSEL_table),
-	ARRAY_SIZE(VAUX33_VSEL_table),
-	ARRAY_SIZE(VMMC_VSEL_table),
-};
-
 struct tps_info {
 	const char *name;
 	unsigned min_uV;
 	unsigned max_uV;
 	u8 table_len;
 	const u16 *table;
-	int vmult;
 };
 
 static struct tps_info tps65910_regs[] = {
@@ -161,15 +132,15 @@ static struct tps_info tps65910_regs[] = {
 	{
 		.name = "VDD1",
 		.min_uV = 600000,
-		.max_uV = 1500000,
-		.table_len = ARRAY_SIZE(VDD1_2_VSEL_table),
+		.max_uV = 4500000,
+		.table_len = ARRAY_SIZE(VDD1_2_VSEL_table) * 3,
 		.table = VDD1_2_VSEL_table,
 	},
 	{
 		.name = "VDD2",
 		.min_uV = 600000,
 		.max_uV = 4500000,
-		.table_len = ARRAY_SIZE(VDD1_2_VSEL_table),
+		.table_len = ARRAY_SIZE(VDD1_2_VSEL_table) * 3,
 		.table = VDD1_2_VSEL_table,
 	},
 	{
@@ -341,31 +312,31 @@ static int tps65910_get_ctrl_register(int id)
 {
 	switch (id) {
 	case tps65910_VRTC:
-		return tps65910_VRTC_REG;
+		return TPS65910_VRTC;
 	case tps65910_VIO:
-		return tps65910_VIO_REG;
+		return TPS65910_VIO;
 	case tps65910_VDD1:
-		return tps65910_VDD1_REG;
+		return TPS65910_VDD1;
 	case tps65910_VDD2:
-		return tps65910_VDD2_REG;
+		return TPS65910_VDD2;
 	case tps65910_VDD3:
-		return tps65910_VDD3_REG;
+		return TPS65910_VDD3;
 	case tps65910_VDIG1:
-		return tps65910_VDIG1_REG;
+		return TPS65910_VDIG1;
 	case tps65910_VDIG2:
-		return tps65910_VDIG2_REG;
+		return TPS65910_VDIG2;
 	case tps65910_VPLL:
-		return tps65910_VPLL_REG;
+		return TPS65910_VPLL;
 	case tps65910_VDAC:
-		return tps65910_VDAC_REG;
+		return TPS65910_VDAC;
 	case tps65910_VAUX1:
-		return tps65910_VAUX1_REG;
+		return TPS65910_VAUX1;
 	case tps65910_VAUX2:
-		return tps65910_VAUX2_REG;
+		return TPS65910_VAUX2;
 	case tps65910_VAUX33:
-		return tps65910_VAUX33_REG;
+		return TPS65910_VAUX33;
 	case tps65910_VMMC:
-		return tps65910_VMMC_REG;
+		return TPS65910_VMMC;
 	default:
 		return -EINVAL;
 	}
@@ -468,10 +439,63 @@ static unsigned int tps65910_get_mode(struct regulator_dev *dev)
 		return REGULATOR_MODE_NORMAL;
 }
 
+static int tps65910_get_voltage_dcdc(struct regulator_dev *dev)
+{
+	struct tps65910_reg *pmic = rdev_get_drvdata(dev);
+	int id = rdev_get_id(dev), voltage = 0;
+	int opvsel = 0, srvsel = 0, mult = 0, sr = 0;
+
+	switch(id) {
+	case tps65910_VDD1:
+		opvsel = tps65910_reg_read(pmic, TPS65910_VDD1_OP);
+		mult = tps65910_reg_read(pmic, TPS65910_VDD1);
+		mult = (mult & VDD1_VGAIN_SEL_MASK) >> VDD1_VGAIN_SEL_SHIFT;
+		srvsel = tps65910_reg_read(pmic, TPS65910_VDD1_SR);
+		sr = opvsel & VDD1_OP_CMD_MASK;
+		opvsel &= VDD1_OP_SEL_MASK;
+		srvsel &= VDD1_SR_SEL_MASK;
+		break;
+	case tps65910_VDD2:
+		opvsel = tps65910_reg_read(pmic, TPS65910_VDD2_OP);
+		mult = tps65910_reg_read(pmic, TPS65910_VDD2);
+		mult = (mult & VDD2_VGAIN_SEL_MASK) >> VDD2_VGAIN_SEL_SHIFT;
+		srvsel = tps65910_reg_read(pmic, TPS65910_VDD2_SR);
+		sr = opvsel & VDD2_OP_CMD_MASK;
+		opvsel &= VDD2_OP_SEL_MASK;
+		srvsel &= VDD2_SR_SEL_MASK;
+		break;
+	}
+
+	/* multiplier 0 == 1 but 2,3 normal */
+	if(!mult)
+		mult=1;
+
+	if (sr) {
+		/* Valid range is 3-75 so normalise */
+		if(srvsel < 3) srvsel = 3;
+		if(srvsel > 75) srvsel = 75;
+		srvsel -= 3;
+
+		voltage = pmic->info[id]->table[srvsel] * 100;
+	} else {
+
+		/* Valid range is 3-75 so normalise */
+		if(opvsel < 3) opvsel = 3;
+		if(opvsel > 75) opvsel = 75;
+		opvsel -= 3;
+
+		voltage = pmic->info[id]->table[opvsel] * 100;
+	}
+
+	voltage *= mult;
+
+	return voltage;
+}
+
 static int tps65910_get_voltage(struct regulator_dev *dev)
 {
 	struct tps65910_reg *pmic = rdev_get_drvdata(dev);
-	int reg, value, id = rdev_get_id(dev), voltage;
+	int reg, value, id = rdev_get_id(dev), voltage = 0;
 
 	reg = tps65910_get_ctrl_register(id);
 	if (reg < 0)
@@ -482,13 +506,6 @@ static int tps65910_get_voltage(struct regulator_dev *dev)
 		return value;
 
 	switch (id) {
-	case tps65910_VDD1:
-	case tps65910_VDD2:
-		value &= 0x3f; // TODO MASK MACRO
-		if(value > 75) value = 75;
-		if(value < 3) value = 3;
-		value -= 3;
-		break;
 	case tps65910_VDD3:
 		return 5 * 1000 * 1000;
 	case tps65910_VIO:
@@ -507,22 +524,73 @@ static int tps65910_get_voltage(struct regulator_dev *dev)
 		return -EINVAL;
 	}
 
-	if ((id == tps65910_VDD1) || id == tps65910_VDD2)
-		voltage = pmic->info[id]->table[value] * 100;
-	else
-		voltage = pmic->info[id]->table[value] * 1000;
-
-	/* VDIG1 and VDIG2 have a multiplier */
-	if (id == tps65910_VDIG1_REG || id == tps65910_VDIG2_REG) {
-		if (pmic->info[id]->vmult)
-			voltage *= pmic->info[id]->vmult;
-	}
+	voltage = pmic->info[id]->table[value] * 1000;
 
 	return voltage;
 }
 
+static int tps65910_set_voltage_dcdc_sel(struct regulator_dev *dev,
+				int selector)
+{
+	struct tps65910_reg *pmic = rdev_get_drvdata(dev);
+	int reg, value, id = rdev_get_id(dev), vsel;
+	int dcdc_mult;
+
+	/* Split vsel into appropriate registers */
+	dcdc_mult = (selector / DCDC_TABLE_SIZE) + 1;
+	if (dcdc_mult == 1) dcdc_mult--;
+	vsel = (selector % DCDC_TABLE_SIZE) + 3;
+
+	if( id == tps65910_VDD1) {
+		reg = tps65910_reg_read(pmic, TPS65910_VDD1);
+		reg &= ~VDD1_VGAIN_SEL_MASK;
+		reg |= (dcdc_mult << VDD1_VGAIN_SEL_SHIFT);
+		tps65910_reg_write(pmic, TPS65910_VDD1, reg);
+		tps65910_reg_write(pmic, TPS65910_VDD1_OP, vsel);
+	} else {
+		reg = tps65910_reg_read(pmic, TPS65910_VDD2);
+		reg &= ~VDD2_VGAIN_SEL_MASK;
+		reg |= dcdc_mult << VDD2_VGAIN_SEL_SHIFT;
+		tps65910_reg_write(pmic, TPS65910_VDD2, reg);
+		tps65910_reg_write(pmic, TPS65910_VDD2_OP, vsel);
+	}
+
+	return 0;
+}
+
+static int tps65910_set_voltage_dcdc(struct regulator_dev *dev,
+				int min_uV, int max_uV)
+{
+	struct tps65910_reg *pmic = rdev_get_drvdata(dev);
+	int id = rdev_get_id(dev), vsel;
+
+	/* check valid voltage */
+	if (min_uV < pmic->info[id]->min_uV
+		|| min_uV > pmic->info[id]->max_uV)
+		return -EINVAL;
+	if (max_uV < pmic->info[id]->min_uV
+		|| max_uV > pmic->info[id]->max_uV)
+		return -EINVAL;
+
+	/* find requested voltage in table */
+	for (vsel = 0; vsel < pmic->info[id]->table_len; vsel++) {
+		int mult = (vsel / DCDC_TABLE_SIZE) + 1;
+		int mV = pmic->info[id]->table[vsel % DCDC_TABLE_SIZE] * mult;
+		int uV = mV * 100;
+
+		/* Break at the first in-range value */
+		if (min_uV <= uV && uV <= max_uV)
+			break;
+	}
+
+	if(vsel == pmic->info[id]->table_len)
+		return -EINVAL;
+
+	return tps65910_set_voltage_dcdc_sel(dev, vsel);
+}
+
 static int tps65910_set_voltage(struct regulator_dev *dev,
-				int min_uV, int max_uV, unsigned *selector)
+				int min_uV, int max_uV)
 {
 	struct tps65910_reg *pmic = rdev_get_drvdata(dev);
 	int reg, value, id = rdev_get_id(dev), vsel;
@@ -540,10 +608,7 @@ static int tps65910_set_voltage(struct regulator_dev *dev,
 		int mV = pmic->info[id]->table[vsel];
 		int uV;
 
-		if ((id == tps65910_VDD1) || id == tps65910_VDD2)
-			uV = mV * 100;
-		else
-			uV = mV * 1000;
+		uV = mV * 1000;
 
 		/* Break at the first in-range value */
 		if (min_uV <= uV && uV <= max_uV)
@@ -559,11 +624,6 @@ static int tps65910_set_voltage(struct regulator_dev *dev,
 		return value;
 
 	switch (id) {
-	case tps65910_VDD1:
-	case tps65910_VDD2:
-		value &= ~0x3f; // TODO MASK MACRO
-		value |= vsel;
-		break;
 	case tps65910_VDD3:
 		return 0;
 	case tps65910_VIO:
@@ -575,14 +635,26 @@ static int tps65910_set_voltage(struct regulator_dev *dev,
 	case tps65910_VAUX2:
 	case tps65910_VAUX33:
 	case tps65910_VMMC:
-		value &= ~(0x3 << 2); // TODO MASK MACRO
-		value |= (vsel << 2);
+		value &= ~(VMMC_SEL_MASK);
+		value |= (vsel << VMMC_SEL_SHIFT);
 		break;
 	default:
 		return -EINVAL;
 	}
 
 	return tps65910_reg_write(pmic, reg, value);
+}
+
+static int tps65910_list_voltage_dcdc(struct regulator_dev *dev,
+					unsigned selector)
+{
+	struct tps65910_reg *pmic = rdev_get_drvdata(dev);
+	int id = rdev_get_id(dev);
+	int mult;
+
+	mult = (selector / DCDC_TABLE_SIZE) + 1;
+
+	return pmic->info[id]->table[selector % DCDC_TABLE_SIZE] * 100 * mult;
 }
 
 static int tps65910_list_voltage(struct regulator_dev *dev,
@@ -596,16 +668,8 @@ static int tps65910_list_voltage(struct regulator_dev *dev,
 
 	if (selector >= pmic->info[id]->table_len)
 		return -EINVAL;
-	else if ((id == tps65910_VDD1) || (id == tps65910_VDD2))
-		voltage = pmic->info[id]->table[selector] * 100;
 	else
 		voltage = pmic->info[id]->table[selector] * 1000;
-
-	/* VDIG1 and VDIG2 have a multiplier */
-	if (id == tps65910_VDIG1_REG || id == tps65910_VDIG2_REG) {
-		if (pmic->info[id]->vmult)
-			voltage *= pmic->info[id]->vmult;
-	}
 
 	return voltage;
 }
@@ -618,6 +682,18 @@ static int tps65910_set_suspend_mode(struct regulator_dev *dev,
 }
 
 /* Regulator ops (except VRTC) */
+static struct regulator_ops tps65910_ops_dcdc = {
+	.is_enabled	= tps65910_is_enabled,
+	.enable		= tps65910_enable,
+	.disable	= tps65910_disable,
+	.set_mode	= tps65910_set_mode,
+	.get_mode	= tps65910_get_mode,
+	.get_voltage	= tps65910_get_voltage_dcdc,
+	.set_voltage	= tps65910_set_voltage_dcdc,
+	.list_voltage	= tps65910_list_voltage_dcdc,
+	.set_suspend_mode = tps65910_set_suspend_mode,
+};
+
 static struct regulator_ops tps65910_ops = {
 	.is_enabled	= tps65910_is_enabled,
 	.enable		= tps65910_enable,
@@ -672,6 +748,7 @@ static __devinit int tps65910_probe(struct platform_device *pdev)
 	struct tps65910_board *pmic_plat_data;
 	static int desc_id;
 	int i, err;
+	u8 reg;
 
 	pmic_plat_data = dev_get_platdata(tps65910->dev);
 	if (!pmic_plat_data)
@@ -689,14 +766,24 @@ static __devinit int tps65910_probe(struct platform_device *pdev)
 	pmic->mfd = tps65910;
 	platform_set_drvdata(pdev, pmic);
 
+	/* Give control of all register to control port */
+	reg = tps65910_reg_read(pmic, TPS65910_DEVCTRL);
+	reg |= DEVCTRL_SR_CTL_I2C_SEL_MASK;
+	tps65910_reg_write(pmic, TPS65910_DEVCTRL, reg);
+
 	for (i = 0; i < tps65910_NUM_REGULATOR; i++, info++, reg_data++) {
 		/* Register the regulators */
 		pmic->info[i] = info;
 
 		pmic->desc[i].name = info->name;
 		pmic->desc[i].id = desc_id++;
-		pmic->desc[i].n_voltages = num_voltages[i];
-		pmic->desc[i].ops = &tps65910_ops;
+		pmic->desc[i].n_voltages = info->table_len;
+
+		if ((i == tps65910_VDD1) || (i == tps65910_VDD2))
+			pmic->desc[i].ops = &tps65910_ops_dcdc;
+		else
+			pmic->desc[i].ops = &tps65910_ops;
+
 		pmic->desc[i].type = REGULATOR_VOLTAGE;
 		pmic->desc[i].owner = THIS_MODULE;
 
