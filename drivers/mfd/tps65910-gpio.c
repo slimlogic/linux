@@ -25,9 +25,9 @@ static int tps6591x_gpio_get(struct gpio_chip *gc, unsigned offset)
 	struct tps65910 *tps65910 = container_of(gc, struct tps65910, gpio);
 	uint8_t val;
 
-	val = tps65910->read(tps65910, TPS6591X_GPIO0, 1, &val);
+	val = tps65910->read(tps65910, TPS65910_GPIO0, 1, &val);
 
-	if (val & TPS6591X_GPIO_STS)
+	if (val & GPIO0_GPIO_STS_MASK)
 		return 1;
 
 	return 0;
@@ -39,14 +39,14 @@ static void tps6591x_gpio_set(struct gpio_chip *gc, unsigned offset,
 	struct tps65910 *tps65910 = container_of(gc, struct tps65910, gpio);
 	uint8_t val;
 
-	val = tps65910->read(tps65910, TPS6591X_GPIO0, 1, &val);
+	val = tps65910->read(tps65910, TPS65910_GPIO0, 1, &val);
 
 	if (value)
-		val |= TPS6591X_GPIO_SET;
+		val |= GPIO0_GPIO_SET_MASK;
 	else
-		val &= ~TPS6591X_GPIO_SET;
+		val &= ~GPIO0_GPIO_SET_MASK;
 
-	tps65910->write(tps65910, TPS6591X_GPIO0, 1, &val);
+	tps65910->write(tps65910, TPS65910_GPIO0, 1, &val);
 }
 
 static int tps6591x_gpio_output(struct gpio_chip *gc, unsigned offset,
@@ -55,14 +55,14 @@ static int tps6591x_gpio_output(struct gpio_chip *gc, unsigned offset,
 	struct tps65910 *tps65910 = container_of(gc, struct tps65910, gpio);
 	uint8_t val;
 
-	val = tps65910->read(tps65910, TPS6591X_GPIO0, 1, &val);
+	val = tps65910->read(tps65910, TPS65910_GPIO0, 1, &val);
 
-	val |= TPS6591X_GPIO_CFG;
+	val |= GPIO0_GPIO_CFG_MASK;
 
 	/* Set the initial value */
 	tps6591x_gpio_set(gc, 0, value);
 
-	return tps65910->write(tps65910, TPS6591X_GPIO0, 1, &val);
+	return tps65910->write(tps65910, TPS65910_GPIO0, 1, &val);
 }
 
 static int tps6591x_gpio_input(struct gpio_chip *gc, unsigned offset)
@@ -70,11 +70,11 @@ static int tps6591x_gpio_input(struct gpio_chip *gc, unsigned offset)
 	struct tps65910 *tps65910 = container_of(gc, struct tps65910, gpio);
 	uint8_t val;
 
-	val = tps65910->read(tps65910, TPS6591X_GPIO0, 1, &val);
+	val = tps65910->read(tps65910, TPS65910_GPIO0, 1, &val);
 
-	val &= ~TPS6591X_GPIO_CFG;
+	val &= ~GPIO0_GPIO_CFG_MASK;
 
-	return tps65910->write(tps65910, TPS6591X_GPIO0, 1, &val);
+	return tps65910->write(tps65910, TPS65910_GPIO0, 1, &val);
 }
 
 static void tps6591x_gpio_init(struct tps65910 *tps65910, int gpio_base)
