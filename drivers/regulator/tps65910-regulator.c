@@ -559,7 +559,7 @@ static int tps65910_set_voltage_dcdc_sel(struct regulator_dev *dev,
 }
 
 static int tps65910_set_voltage_dcdc(struct regulator_dev *dev,
-				int min_uV, int max_uV)
+				int min_uV, int max_uV, unsigned * selector)
 {
 	struct tps65910_reg *pmic = rdev_get_drvdata(dev);
 	int id = rdev_get_id(dev), vsel;
@@ -590,7 +590,7 @@ static int tps65910_set_voltage_dcdc(struct regulator_dev *dev,
 }
 
 static int tps65910_set_voltage(struct regulator_dev *dev,
-				int min_uV, int max_uV)
+				int min_uV, int max_uV, unsigned *selector)
 {
 	struct tps65910_reg *pmic = rdev_get_drvdata(dev);
 	int reg, value, id = rdev_get_id(dev), vsel;
