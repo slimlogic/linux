@@ -21,6 +21,13 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/tps65910.h>
 
+static unsigned int tps_id;
+unsigned int tps_chip(void)
+{
+	return tps_id;
+}
+EXPORT_SYMBOL(tps_chip);
+
 static struct mfd_cell tps65910s[] = {
 	{
 		.name = "tps65910-pmic",
@@ -90,6 +97,8 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 	struct tps65910 *tps65910;
 	int ret = 0;
 
+	tps_id = id->driver_data;
+
 	tps65910 = kzalloc(sizeof(struct tps65910), GFP_KERNEL);
 	if (tps65910 == NULL)
 		return -ENOMEM;
@@ -126,7 +135,8 @@ static int tps65910_i2c_remove(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id tps65910_i2c_id[] = {
-       { "tps65910", 0 },
+       { "tps65910", TPS65910 },
+       { "tps65911", TPS65911 },
        { }
 };
 MODULE_DEVICE_TABLE(i2c, tps65910_i2c_id);
