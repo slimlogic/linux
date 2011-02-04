@@ -30,6 +30,7 @@
 
 #include <linux/regulator/machine.h>
 #include <linux/i2c/twl.h>
+#include <linux/mfd/tps65910.h>
 
 #include <mach/hardware.h>
 #include <asm/mach-types.h>
@@ -313,6 +314,161 @@ static struct twl4030_platform_data beagle_twldata = {
 	.vpll2		= &beagle_vpll2,
 };
 
+struct regulator_init_data beagle_tps65911_regulators[] = {
+	{ /* VRTC */
+		.constraints = {
+		},
+	},
+	{ /* VIO */
+		.constraints = {
+			.min_uV			= 1500000,
+			.max_uV			= 3300000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* VDD1 */
+		.constraints = {
+			.min_uV			= 600000,
+			.max_uV			= 4500000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* VDD2 */
+		.constraints = {
+			.min_uV			= 600000,
+			.max_uV			= 4500000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask	= 	REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* VDDCTRL */
+		.constraints = {
+			.min_uV			= 600000,
+			.max_uV			= 1400000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* LDO1 */
+		.constraints = {
+			.min_uV			= 1000000,
+			.max_uV			= 3300000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* LDO2 */
+		.constraints = {
+			.min_uV			= 1000000,
+			.max_uV			= 3300000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* LDO3 */
+		.constraints = {
+			.min_uV			= 1000000,
+			.max_uV			= 3300000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* LDO4 */
+		.constraints = {
+			.min_uV			= 1000000,
+			.max_uV			= 3300000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* LDO5 */
+		.constraints = {
+			.min_uV			= 1000000,
+			.max_uV			= 3300000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* LDO6 */
+		.constraints = {
+			.min_uV			= 1000000,
+			.max_uV			= 3300000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* LDO7 */
+		.constraints = {
+			.min_uV			= 1000000,
+			.max_uV			= 3300000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+	{ /* LDO8 */
+		.constraints = {
+			.min_uV			= 1000000,
+			.max_uV			= 3300000,
+			.apply_uV		= true,
+			.valid_modes_mask	= REGULATOR_MODE_NORMAL
+						| REGULATOR_MODE_STANDBY,
+			.valid_ops_mask		= REGULATOR_CHANGE_VOLTAGE
+						| REGULATOR_CHANGE_MODE
+						| REGULATOR_CHANGE_STATUS,
+		},
+	},
+};
+
+static struct tps65910_board beagle_tps65911_data = {
+		.tps65910_pmic_init_data = beagle_tps65911_regulators,
+};
+
 static struct i2c_board_info __initdata beagle_i2c_boardinfo[] = {
 	{
 		I2C_BOARD_INFO("twl4030", 0x48),
@@ -322,10 +478,19 @@ static struct i2c_board_info __initdata beagle_i2c_boardinfo[] = {
 	},
 };
 
+static struct i2c_board_info __initdata beagle_i2c2_boardinfo[] = {
+	{
+		I2C_BOARD_INFO("tps65911", 0x2D),
+		.platform_data = &beagle_tps65911_data,
+	},	
+};
+
 static int __init omap3_beagle_i2c_init(void)
 {
 	omap_register_i2c_bus(1, 2600, beagle_i2c_boardinfo,
 			ARRAY_SIZE(beagle_i2c_boardinfo));
+	omap_register_i2c_bus(2, 400, beagle_i2c2_boardinfo,
+			ARRAY_SIZE(beagle_i2c2_boardinfo));
 	/* Bus 3 is attached to the DVI port where devices like the pico DLP
 	 * projector don't work reliably with 400kHz */
 	omap_register_i2c_bus(3, 100, NULL, 0);
