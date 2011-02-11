@@ -464,7 +464,7 @@
 #define LDO_SEL_MASK				      0xFC
 #define LDO_SEL_SHIFT				      2
 #define LDO_ST_MASK				      0x03
-#define LD1_ST_SHIFT				      0
+#define LDO_ST_SHIFT				      0
 
 
 /*Register THERM  (0x80) register.RegisterDescription */
