@@ -340,7 +340,7 @@ static struct tps_info tps65911_regs[] = {
 	TPS_VOLTAGE_LDO(VIO, 1500000, 3300000),
 	TPS_VOLTAGE_DCDC(VDD1, 600000, 4500000, VDD1_2_VSEL_table, 3),
 	TPS_VOLTAGE_DCDC(VDD2, 600000, 4500000, VDD1_2_VSEL_table, 3),
-	TPS_VOLTAGE_LDO(VDDCTRL, 6000000, 14000000),
+	TPS_VOLTAGE_DCDC(VDDCTRL, 600000, 1400000, VDDCTRL_VSEL_table, 1),
 	TPS_VOLTAGE_LDO(LDO1, 1000000, 3300000),
 	TPS_VOLTAGE_LDO(LDO2, 1000000, 3300000),
 	TPS_VOLTAGE_LDO(LDO3, 1000000, 3300000),
@@ -715,8 +715,13 @@ static int tps65910_get_voltage(struct regulator_dev *dev)
 	case VAUX2:
 	case VAUX33:
 	case VMMC:
-		value >>= 2;
-		value &= 0x3; // TODO MASK MACRO
+		if (tps_chip() == TPS65910) {
+			value >>= 2;
+			value &= 0x3; // TODO MASK MACRO
+		} else {
+			value >>= LDO_SEL_SHIFT;
+			value &= 0x3F;
+		}
 		break;
 	default:
 		return -EINVAL;
@@ -848,8 +853,13 @@ static int tps65910_set_voltage(struct regulator_dev *dev,
 	case VAUX2:
 	case VAUX33:
 	case VMMC:
-		value &= ~(VMMC_SEL_MASK);
-		value |= (vsel << VMMC_SEL_SHIFT);
+		if (tps_chip() == TPS65910) {
+			value &= ~(VMMC_SEL_MASK);
+			value |= (vsel << VMMC_SEL_SHIFT);
+		} else {
+			value &= ~(LDO_SEL_MASK);
+			value |= (vsel << LDO_SEL_SHIFT);
+		}
 		break;
 	default:
 		return -EINVAL;
