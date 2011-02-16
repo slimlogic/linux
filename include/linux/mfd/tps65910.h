@@ -944,15 +944,6 @@
 #define TPS65910_GPIO_SET			BIT(0)
 
 /**
- * struct tps65910_board
- * Board platform data may be used to initialize regulators.
- */
-
-struct tps65910_board {
-	struct regulator_init_data *tps65910_pmic_init_data;
-};
-
-/**
  * struct tps65910 - tps65910 sub-driver chip access routines
  */
 
@@ -980,7 +971,11 @@ struct tps65910 {
 
 struct tps65910_platform_data {
 	int irq_base;
+	struct regulator_init_data *tps65910_pmic_init_data;
 };
+
+int tps65910_irq_init(struct tps65910 *tps65910, int irq,
+		    struct tps65910_platform_data *pdata);
 
 unsigned int tps_chip(void);
 

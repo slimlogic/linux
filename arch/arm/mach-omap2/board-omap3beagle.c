@@ -465,7 +465,7 @@ struct regulator_init_data beagle_tps65911_regulators[] = {
 	},
 };
 
-static struct tps65910_board beagle_tps65911_data = {
+static struct tps65910_platform_data beagle_tps65911_data = {
 		.tps65910_pmic_init_data = beagle_tps65911_regulators,
 };
 

@@ -95,6 +95,8 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 			    const struct i2c_device_id *id)
 {
 	struct tps65910 *tps65910;
+	struct tps65910_platform_data *pdata;
+	int irq;
 	int ret = 0;
 
 	tps_id = id->driver_data;
@@ -115,6 +117,15 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 
 	if (ret < 0)
 		goto err;
+
+	pdata = i2c->dev.platform_data;
+	irq = i2c->irq;
+
+	ret = tps65910_irq_init(tps65910, irq, pdata);
+
+	if (ret < 0) {
+		goto err;
+	}
 
 	return ret;
 

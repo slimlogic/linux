@@ -977,7 +977,7 @@ static __devinit int tps65910_probe(struct platform_device *pdev)
 	struct regulator_init_data *reg_data;
 	struct regulator_dev *rdev;
 	struct tps65910_reg *pmic;
-	struct tps65910_board *pmic_plat_data;
+	struct tps65910_platform_data *pmic_plat_data;
 	static int desc_id;
 	int i, err;
 	u8 reg;
