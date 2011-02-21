@@ -127,6 +127,8 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 		goto err;
 	}
 
+	tps6591x_gpio_init(tps65910, pdata->gpio_base); 
+
 	return ret;
 
 err:
