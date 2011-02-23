@@ -25,7 +25,7 @@ static int tps6591x_gpio_get(struct gpio_chip *gc, unsigned offset)
 	struct tps65910 *tps65910 = container_of(gc, struct tps65910, gpio);
 	uint8_t val;
 
-	val = tps65910->read(tps65910, TPS65910_GPIO0 + offset, 1, &val);
+	tps65910->read(tps65910, TPS65910_GPIO0 + offset, 1, &val);
 
 	if (val & GPIO_STS_MASK)
 		return 1;
@@ -39,7 +39,9 @@ static void tps6591x_gpio_set(struct gpio_chip *gc, unsigned offset,
 	struct tps65910 *tps65910 = container_of(gc, struct tps65910, gpio);
 	uint8_t val;
 
-	val = tps65910->read(tps65910, TPS65910_GPIO0 + offset, 1, &val);
+	tps65910->read(tps65910, TPS65910_GPIO0 + offset, 1, &val);
+
+	pr_err("%s: val - 0x%x  offset - %d\n", __func__, val, offset);
 
 	if (value)
 		val |= GPIO_SET_MASK;
@@ -47,6 +49,8 @@ static void tps6591x_gpio_set(struct gpio_chip *gc, unsigned offset,
 		val &= ~GPIO_SET_MASK;
 
 	tps65910->write(tps65910, TPS65910_GPIO0 + offset, 1, &val);
+
+	pr_err("%s: val - 0x%x\n", __func__, val);
 }
 
 static int tps6591x_gpio_output(struct gpio_chip *gc, unsigned offset,
@@ -55,12 +59,16 @@ static int tps6591x_gpio_output(struct gpio_chip *gc, unsigned offset,
 	struct tps65910 *tps65910 = container_of(gc, struct tps65910, gpio);
 	uint8_t val;
 
-	val = tps65910->read(tps65910, TPS65910_GPIO0 + offset, 1, &val);
+	tps65910->read(tps65910, TPS65910_GPIO0 + offset, 1, &val);
 
 	val |= GPIO_CFG_MASK;
 
+	/* Disable GPIO pad pulldown in tps65911 */
+	if (tps_chip() == TPS65911)
+		val &= ~GPIO_PUEN_MASK;
+
 	/* Set the initial value */
-	tps6591x_gpio_set(gc, 0, value);
+	tps6591x_gpio_set(gc, offset, value);
 
 	return tps65910->write(tps65910, TPS65910_GPIO0 + offset, 1, &val);
 }
@@ -70,7 +78,7 @@ static int tps6591x_gpio_input(struct gpio_chip *gc, unsigned offset)
 	struct tps65910 *tps65910 = container_of(gc, struct tps65910, gpio);
 	uint8_t val;
 
-	val = tps65910->read(tps65910, TPS65910_GPIO0 + offset, 1, &val);
+	tps65910->read(tps65910, TPS65910_GPIO0 + offset, 1, &val);
 
 	val &= ~GPIO_CFG_MASK;
 
