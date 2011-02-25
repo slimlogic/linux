@@ -55,7 +55,7 @@ static irqreturn_t tps65910_irq(int irq, void *irq_data)
 		irq_sts |= reg << 16;
 	}
 
-	irq_mask = tps65910->read(tps65910, TPS65910_INT_MSK, 1, &reg);
+	tps65910->read(tps65910, TPS65910_INT_MSK, 1, &reg);
 	irq_mask = reg;
 	tps65910->read(tps65910, TPS65910_INT_MSK2, 1, &reg);
 	irq_mask |= reg << 8;
@@ -63,8 +63,6 @@ static irqreturn_t tps65910_irq(int irq, void *irq_data)
 		tps65910->read(tps65910, TPS65910_INT_MSK3, 1, &reg);
 		irq_mask |= reg << 16;
 	}
-
-	irq_sts &= irq_mask;
 
 	if (!irq_mask)
 		return IRQ_NONE;
@@ -117,9 +115,11 @@ static void tps65910_irq_sync_unlock(unsigned int irq)
 		reg = tps65910->irq_mask & 0xFF;
 		tps65910->write(tps65910, TPS65910_INT_MSK, 1, &reg);
 		reg = tps65910->irq_mask >> 8 & 0xFF;
+		tps65910->write(tps65910, TPS65910_INT_MSK2, 1, &reg);
 		if (tps_chip() == TPS65911) {
-			tps65910->write(tps65910, TPS65910_INT_MSK2, 1, &reg);
-			reg = tps65910->irq_mask >> 8;
+			reg = tps65910->irq_mask >> 16;
+			tps65910->write(tps65910, TPS65910_INT_MSK3, 1, &reg);
+
 		}
 	}
 	mutex_unlock(&tps65910->irq_lock);
@@ -164,15 +164,18 @@ int tps65910_irq_init(struct tps65910 *tps65910, int irq,
 		return 0;
 	}
 
-	/* Mask top level interrupts */
-	reg = 0xFF;
-	tps65910->write(tps65910, TPS65910_INT_MSK, 1, &reg);
-	reg = 0xFF;
-	tps65910->write(tps65910, TPS65910_INT_MSK2, 1, &reg);
-	if (tps_chip() == TPS65911) {
-		reg = 0xFF;
-		tps65910->write(tps65910, TPS65910_INT_MSK3, 1, &reg);
-	}
+	/* Clear unattended interrupts */
+	tps65910->read(tps65910, TPS65910_INT_STS, 1, &reg);
+	tps65910->write(tps65910, TPS65910_INT_STS, 1, &reg);
+	tps65910->read(tps65910, TPS65910_INT_STS2, 1, &reg);
+	tps65910->write(tps65910, TPS65910_INT_STS2, 1, &reg);
+	tps65910->read(tps65910, TPS65910_INT_STS3, 1, &reg);
+	tps65910->write(tps65910, TPS65910_INT_STS3, 1, &reg);
+
+	/* Mask top level interrupts
+	 * TODO: Do not use magic numbers
+	 */
+	tps65910->irq_mask = 0xFFFFFF;
 
 	mutex_init(&tps65910->irq_lock);
 	tps65910->chip_irq = irq;
@@ -204,7 +207,7 @@ int tps65910_irq_init(struct tps65910 *tps65910, int irq,
 	ret = request_threaded_irq(irq, NULL, tps65910_irq, flags,
 				   "tps65910", tps65910);
 
-	set_irq_type(irq, IRQ_TYPE_LEVEL_HIGH);
+	set_irq_type(irq, IRQ_TYPE_LEVEL_LOW);
 
 	if (ret != 0)
 		dev_err(tps65910->dev, "Failed to request IRQ: %d\n", ret);
