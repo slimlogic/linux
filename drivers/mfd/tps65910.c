@@ -40,6 +40,14 @@ static struct mfd_cell tps65910s[] = {
 	},
 };
 
+static struct mfd_cell tps65911s[] = {
+	{
+		.name = "tps65910-pmic",
+	},
+	{
+		.name = "tps65911-comparator",
+	},
+};
 
 static int tps65910_i2c_read(struct tps65910 *tps65910, u8 reg,
 				  int bytes, void *dest)
@@ -111,9 +119,14 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 	tps65910->read = tps65910_i2c_read;
 	tps65910->write = tps65910_i2c_write;
 
-	ret = mfd_add_devices(tps65910->dev, -1,
-			      tps65910s, ARRAY_SIZE(tps65910s),
+	if (tps_id == TPS65910)
+		ret = mfd_add_devices(tps65910->dev, -1,
+			      tps65911s, ARRAY_SIZE(tps65911s),
 			      NULL, 0);
+	else if (tps_id == TPS65911)
+		ret = mfd_add_devices(tps65910->dev, -1,
+				tps65911s, ARRAY_SIZE(tps65911s),
+				NULL, 0);
 
 	if (ret < 0)
 		goto err;
