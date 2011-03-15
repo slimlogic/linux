@@ -21,12 +21,17 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/tps65910.h>
 
-static unsigned int tps_id;
-unsigned int tps_chip(void)
-{
-	return tps_id;
-}
-EXPORT_SYMBOL(tps_chip);
+#define PMIC_CELL		0
+#define RTC_CELL		1
+
+struct resource rtc_resources[] = {
+	{
+		.name = "rtc_irq",
+		.start = TPS65910_IRQ_BASE,
+		.end = TPS65910_IRQ_BASE + 1,
+		.flags = IORESOURCE_IRQ,
+	},
+};
 
 static struct mfd_cell tps65910s[] = {
 	{
@@ -45,9 +50,21 @@ static struct mfd_cell tps65911s[] = {
 		.name = "tps65910-pmic",
 	},
 	{
+		.name = "twl_rtc",
+		.resources = rtc_resources,
+		.num_resources = 1,
+	},
+	{
 		.name = "tps65911-comparator",
 	},
 };
+
+static unsigned int tps_id;
+unsigned int tps_chip(void)
+{
+	return tps_id;
+}
+EXPORT_SYMBOL(tps_chip);
 
 static int tps65910_i2c_read(struct tps65910 *tps65910, u8 reg,
 				  int bytes, void *dest)
@@ -104,13 +121,19 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 {
 	struct tps65910 *tps65910;
 	struct tps65910_platform_data *pdata;
+	struct pmic_data *pmic_data;
 	int irq;
 	int ret = 0;
 
 	tps_id = id->driver_data;
-
+	pdata = dev_get_platdata(&i2c->dev);
+	
 	tps65910 = kzalloc(sizeof(struct tps65910), GFP_KERNEL);
 	if (tps65910 == NULL)
+		return -ENOMEM;
+
+	pmic_data = kzalloc(sizeof(struct pmic_data), GFP_KERNEL);
+	if (pmic_data == NULL)
 		return -ENOMEM;
 
 	i2c_set_clientdata(i2c, tps65910);
@@ -119,21 +142,27 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 	tps65910->read = tps65910_i2c_read;
 	tps65910->write = tps65910_i2c_write;
 
-	if (tps_id == TPS65910)
+	pmic_data->id = id->driver_data;
+	pmic_data->pmic = tps65910;
+
+	if (tps_id == TPS65910) {
+		tps65910s[RTC_CELL].platform_data = pmic_data;
+		tps65910s[RTC_CELL].data_size = sizeof(struct pmic_data);
 		ret = mfd_add_devices(tps65910->dev, -1,
 			      tps65910s, ARRAY_SIZE(tps65910s),
-			      NULL, 0);
-	else if (tps_id == TPS65911)
+			      NULL, pdata->irq_base);
+	} else if (tps_id == TPS65911) {
+		tps65911s[RTC_CELL].platform_data = pmic_data;
+		tps65911s[RTC_CELL].data_size = sizeof(struct pmic_data);
 		ret = mfd_add_devices(tps65910->dev, -1,
 				tps65911s, ARRAY_SIZE(tps65911s),
-				NULL, 0);
+				NULL, pdata->irq_base);
+	}
 
 	if (ret < 0)
 		goto err;
 
-	pdata = i2c->dev.platform_data;
 	irq = i2c->irq;
-
 	ret = tps65910_irq_init(tps65910, irq, pdata);
 
 	if (ret < 0) {

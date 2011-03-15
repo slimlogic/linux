@@ -917,6 +917,11 @@ struct tps65910_platform_data {
 	struct regulator_init_data *tps65910_pmic_init_data;
 };
 
+struct pmic_data {
+	int id;
+	void * pmic;
+};
+
 int tps65910_irq_init(struct tps65910 *tps65910, int irq,
 		    struct tps65910_platform_data *pdata);
 
