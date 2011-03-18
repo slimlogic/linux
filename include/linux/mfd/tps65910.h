@@ -123,6 +123,10 @@
 #define TPS65911_LDO3						    0x37
 #define TPS65911_VMBCH						    0x6A
 #define TPS65911_VMBCH2						    0x6B
+#define TPS65911_LED_CTRL1					    0x6C
+#define TPS65911_LED_CTRL2					    0x6D
+#define TPS65911_PWM_CTRL1					    0X6E
+#define TPS65911_PWM_CTRL2					    0x6F
 
 /*
  * List of register bitfields for component TPS65910
@@ -926,6 +930,8 @@ int tps65910_irq_init(struct tps65910 *tps65910, int irq,
 		    struct tps65910_platform_data *pdata);
 
 void tps6591x_gpio_init(struct tps65910 *tps65910, int gpio_base);
+
+void tps65911_pwm_init(struct tps65910 *tps65910);
 
 unsigned int tps_chip(void);
 
