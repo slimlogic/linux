@@ -23,7 +23,7 @@ int pwm_config(struct pwm_device *pwm, int duty_ns, int period_ns);
  * This function configures the pwm device using frequency data
  * instead of period time.
  */
-int pwm_config(struct pwm_device *pwm, int duty_cycle, int frequency);
+int pwm_freq_config(struct pwm_device *pwm, int duty_cycle, int frequency);
 
 /*
  * pwm_enable - start a PWM output toggling
