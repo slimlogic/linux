@@ -25,6 +25,11 @@
 #define REGULATOR_LDO			0
 #define REGULATOR_DCDC			1
 
+/* PWM id list */
+#define PWM_ID				0
+#define PWM_LED1_ID			1
+#define PWM_LED2_ID			2
+
 /*
  * List of registers for component TPS65910
  *
@@ -886,6 +891,16 @@
 #define TPS65910_GPIO_CFG			BIT(2)
 #define TPS65910_GPIO_STS			BIT(1)
 #define TPS65910_GPIO_SET			BIT(0)
+
+/* LED_CTRL Register Definitions */
+#define LED_CTRL1_LED1_OFF			0xF8
+#define LED_CTRL1_LED2_OFF			0xC7
+#define LED_CTRL1_LED1_PERIOD_MASK		0x07
+#define LED_CTRL1_LED2_PERIOD_MASK		0x38
+#define LED_CTRL2_LED1_ON_TIME_MASK		0x03
+#define LED_CTRL2_LED2_ON_TIME_MASK		0X0c
+#define LED_CTRL1_LED2_OFFSET			3
+#define LED_CTRL2_LED2_OFFSET			2
 
 /**
  * struct tps65910 - tps65910 sub-driver chip access routines
