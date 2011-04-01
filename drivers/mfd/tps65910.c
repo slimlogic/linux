@@ -23,6 +23,8 @@
 
 #define PMIC_CELL		0
 #define RTC_CELL		1
+#define COMPARATOR_CELL		2
+#define WDT_CELL		3
 
 struct resource rtc_resources[] = {
 	{
@@ -56,6 +58,9 @@ static struct mfd_cell tps65911s[] = {
 	},
 	{
 		.name = "tps65911-comparator",
+	},
+	{
+		.name = "tps65911-wdt",
 	},
 };
 
@@ -154,6 +159,10 @@ static int tps65910_i2c_probe(struct i2c_client *i2c,
 	} else if (tps_id == TPS65911) {
 		tps65911s[RTC_CELL].platform_data = pmic_data;
 		tps65911s[RTC_CELL].data_size = sizeof(struct pmic_data);
+
+		tps65911s[WDT_CELL].platform_data = tps65910;
+		tps65911s[WDT_CELL].data_size = sizeof(struct tps65910);
+
 		ret = mfd_add_devices(tps65910->dev, -1,
 				tps65911s, ARRAY_SIZE(tps65911s),
 				NULL, pdata->irq_base);
