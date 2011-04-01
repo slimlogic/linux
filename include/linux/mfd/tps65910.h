@@ -126,6 +126,7 @@
 #define TPS65911_LDO6						    0x35
 #define TPS65911_LDO4						    0x36
 #define TPS65911_LDO3						    0x37
+#define TPS65911_WATCHDOG					    0x69
 #define TPS65911_VMBCH						    0x6A
 #define TPS65911_VMBCH2						    0x6B
 #define TPS65911_LED_CTRL1					    0x6C
@@ -901,6 +902,17 @@
 #define LED_CTRL2_LED2_ON_TIME_MASK		0X0c
 #define LED_CTRL1_LED2_OFFSET			3
 #define LED_CTRL2_LED2_OFFSET			2
+
+/* WATCHDOG Register Definitions */
+#define WTCHDG_TIME_MASK			0x07
+#define WTCHDG_MODE_MASK			0x08
+#define WTCHDG_TIME_OFFSET			0
+#define WTCHDG_MODE_OFFSET			3
+
+#define WTCHDG_TIME_DEFAULT_ACTIVE		0x111
+#define WTCHDG_TIME_INACTIVE			0X000
+
+#define WTCHDG_IT_MASK				0x10
 
 /**
  * struct tps65910 - tps65910 sub-driver chip access routines
