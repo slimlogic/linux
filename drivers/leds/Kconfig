@@ -379,6 +379,13 @@ config LEDS_NETXBIG
 	  and 5Big Network v2 boards. The LEDs are wired to a CPLD and are
 	  controlled through a GPIO extension bus.
 
+config LEDS_TPS65912
+	tristate "LED suport for TPS65912 PMIC"
+	depends on LEDS_CLASS
+	depends on MFD_TPS65912
+	help
+	  This option enable support for LEDs found on TPS65912 pmic.
+
 config LEDS_TRIGGERS
 	bool "LED Trigger support"
 	depends on LEDS_CLASS

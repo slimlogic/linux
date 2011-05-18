@@ -25,6 +25,9 @@ static struct mfd_cell tps65912s[] = {
 	{
 		.name = "tps65912-pmic",
 	},
+	{
+		.name = "tps65912-led",
+	}
 };
 
 int tps65912_set_bits(struct tps65912 *tps65912, u8 reg, u8 mask)

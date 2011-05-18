@@ -276,6 +276,13 @@ struct tps65912_board {
 	int irq;
 	int irq_base;
 	int gpio_base;
+	int t1;
+	int t2;
+	int t3;
+	int t4;
+	int t5;
+	int mA;
+	int pwm;
 	struct regulator_init_data *tps65912_pmic_init_data;
 };
 
