@@ -524,6 +524,60 @@ static struct regulator_ops palmas_ops_smps = {
 	.map_voltage		= palmas_map_voltage_smps,
 };
 
+/* @brief set or clear the bypass bit on SMPS10
+ *
+ * There is not a way to represent this function within the regulator
+ * framework. This sets/clears the bypass of SMPS10 so voltage is obtained
+ * from either SMPS10_IN or BOOST.
+ *
+ * @param palmas pointer to the palmas mfd structure
+ * @param bypass boolean to indicate switch status
+ * @return error or result
+ */
+int palmas_set_bypass_smps10(struct palmas *palmas, int bypass)
+{
+	unsigned int reg;
+
+	palmas_smps_read(palmas, PALMAS_SMPS10_CTRL, &reg);
+
+	if (bypass)
+		reg |= SMPS10_BYPASS_EN;
+	else
+		reg &= ~SMPS10_BYPASS_EN;
+
+	palmas_smps_write(palmas, PALMAS_SMPS10_CTRL, reg);
+
+	return 0;
+}
+EXPORT_SYMBOL(palmas_set_bypass_smps10);
+
+/* @brief set or clear the switch bit on SMPS10
+ *
+ * There is not a way to represent this function within the regulator
+ * framework. This sets/clears the switch of SMPS10 so SMPS10_OUT1 and
+ * SMPS10_OUT2 are shorted together.
+ *
+ * @param palmas pointer to the palmas mfd structure
+ * @param sw boolean to indicate switch status
+ * @return error or result
+ */
+int palmas_set_switch_smps10(struct palmas *palmas, int sw)
+{
+	unsigned int reg;
+
+	palmas_smps_read(palmas, PALMAS_SMPS10_CTRL, &reg);
+
+	if (sw)
+		reg |= SMPS10_SWITCH_EN;
+	else
+		reg &= ~SMPS10_SWITCH_EN;
+
+	palmas_smps_write(palmas, PALMAS_SMPS10_CTRL, reg);
+
+	return 0;
+}
+EXPORT_SYMBOL(palmas_set_switch_smps10);
+
 static struct regulator_ops palmas_ops_smps10 = {
 	.is_enabled		= regulator_is_enabled_regmap,
 	.enable			= regulator_enable_regmap,
