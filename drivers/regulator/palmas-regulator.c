@@ -512,6 +512,36 @@ static int palmas_map_voltage_smps(struct regulator_dev *rdev,
 	return ret;
 }
 
+static int palmas_suspend_enable_ldo(struct regulator_dev *dev)
+{
+	struct palmas_pmic *pmic = rdev_get_drvdata(dev);
+	int id = rdev_get_id(dev);
+	unsigned int reg;
+
+	palmas_ldo_read(pmic->palmas, palmas_regs_info[id].ctrl_addr, &reg);
+
+	reg |= PALMAS_LDO1_CTRL_MODE_SLEEP;
+
+	palmas_ldo_write(pmic->palmas, palmas_regs_info[id].ctrl_addr, reg);
+
+	return 0;
+}
+
+static int palmas_suspend_disable_ldo(struct regulator_dev *dev)
+{
+	struct palmas_pmic *pmic = rdev_get_drvdata(dev);
+	int id = rdev_get_id(dev);
+	unsigned int reg;
+
+	palmas_ldo_read(pmic->palmas, palmas_regs_info[id].ctrl_addr, &reg);
+
+	reg &= ~PALMAS_LDO1_CTRL_MODE_SLEEP;
+
+	palmas_ldo_write(pmic->palmas, palmas_regs_info[id].ctrl_addr, reg);
+
+	return 0;
+}
+
 static struct regulator_ops palmas_ops_smps = {
 	.is_enabled		= palmas_is_enabled_smps,
 	.enable			= palmas_enable_smps,
@@ -639,6 +669,8 @@ static struct regulator_ops palmas_ops_ldo = {
 	.set_voltage_sel	= regulator_set_voltage_sel_regmap,
 	.list_voltage		= palmas_list_voltage_ldo,
 	.map_voltage		= palmas_map_voltage_ldo,
+	.set_suspend_enable	= palmas_suspend_enable_ldo,
+	.set_suspend_disable	= palmas_suspend_disable_ldo,
 };
 
 static int palmas_enable_booost(struct regulator_dev *dev)
