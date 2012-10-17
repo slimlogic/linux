@@ -334,6 +334,54 @@ static int __devinit palmas_i2c_probe(struct i2c_client *i2c,
 		}
 	}
 
+	/* Read varient info from the device */
+	slave = PALMAS_BASE_TO_SLAVE(PALMAS_ID_BASE);
+	addr = PALMAS_BASE_TO_REG(PALMAS_ID_BASE, PALMAS_PRODUCT_ID_LSB);
+	ret = regmap_read(palmas->regmap[slave], addr, &reg);
+	if (ret < 0) {
+		dev_err(palmas->dev, "Unable to read ID err: %d\n", ret);
+		goto err;
+	}
+
+	palmas->id = reg;
+
+	slave = PALMAS_BASE_TO_SLAVE(PALMAS_ID_BASE);
+	addr = PALMAS_BASE_TO_REG(PALMAS_ID_BASE, PALMAS_PRODUCT_ID_MSB);
+	ret = regmap_read(palmas->regmap[slave], addr, &reg);
+	if (ret < 0) {
+		dev_err(palmas->dev, "Unable to read ID err: %d\n", ret);
+		goto err;
+	}
+
+	palmas->id |= reg << 8;
+
+	dev_info(palmas->dev, "Product ID %x\n", palmas->id);
+
+	slave = PALMAS_BASE_TO_SLAVE(PALMAS_DESIGNREV_BASE);
+	addr = PALMAS_BASE_TO_REG(PALMAS_DESIGNREV_BASE, PALMAS_DESIGNREV);
+	ret = regmap_read(palmas->regmap[slave], addr, &reg);
+	if (ret < 0) {
+		dev_err(palmas->dev, "Unable to read DESIGNREV err: %d\n", ret);
+		goto err;
+	}
+
+	palmas->designrev = reg & PALMAS_DESIGNREV_DESIGNREV_MASK;
+
+	dev_info(palmas->dev, "Product Design Rev %x\n", palmas->designrev);
+
+	slave = PALMAS_BASE_TO_SLAVE(PALMAS_PMU_CONTROL_BASE);
+	addr = PALMAS_BASE_TO_REG(PALMAS_PMU_CONTROL_BASE, PALMAS_SW_REVISION);
+	ret = regmap_read(palmas->regmap[slave], addr, &reg);
+	if (ret < 0) {
+		dev_err(palmas->dev, "Unable to read SW_REVISION err: %d\n",
+				ret);
+		goto err;
+	}
+
+	palmas->sw_revision = reg;
+
+	dev_info(palmas->dev, "Product SW Rev %x\n", palmas->sw_revision);
+
 	/* Change IRQ into clear on read mode for efficiency */
 	slave = PALMAS_BASE_TO_SLAVE(PALMAS_INTERRUPT_BASE);
 	addr = PALMAS_BASE_TO_REG(PALMAS_INTERRUPT_BASE, PALMAS_INT_CTRL);
