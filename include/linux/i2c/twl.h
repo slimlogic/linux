@@ -173,6 +173,10 @@ TWL_CLASS_IS(6030, TWL6030_CLASS_ID)
 
 #define TWL6032_SUBCLASS	BIT(4)  /* TWL6032 has changed registers */
 
+struct twl_data {
+	int features;
+};
+
 /*
  * Read and write single 8-bit registers
  */

@@ -1228,10 +1228,10 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
 	struct twl4030_platform_data	*pdata = client->dev.platform_data;
 	struct device_node		*node = client->dev.of_node;
+	struct twl_data			*twl_data;
 	int				irq_base = 0;
 	int				status;
 	unsigned			i, num_slaves;
-	int				features;
 	u8				temp;
 
 	if (node && !pdata) {
@@ -1250,6 +1250,12 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		dev_dbg(&client->dev, "no platform data?\n");
 		return -EINVAL;
 	}
+
+	twl_data = devm_kzalloc(&client->dev, sizeof(*twl_data), GFP_KERNEL);
+	if (!twl_data)
+		return -ENOMEM;
+
+	i2c_set_clientdata(client, twl_data);
 
 	if (i2c_check_functionality(client->adapter, I2C_FUNC_I2C) == 0) {
 		dev_dbg(&client->dev, "can't talk I2C?\n");
@@ -1336,7 +1342,7 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	if (node)
 		status = of_platform_populate(node, NULL, NULL, &client->dev);
 
-	features = id->driver_data;
+	twl_data->features = id->driver_data;
 	if (twl_class_is_6030()) {
 		if (twl_i2c_read_u8(TWL_MODULE_USB, &temp,
 						USB_PRODUCT_ID_LSB)) {
@@ -1344,11 +1350,11 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 			goto fail;
 		}
 		if (temp == 0x32)
-			features |= TWL6032_SUBCLASS;
+			twl_data->features |= TWL6032_SUBCLASS;
 	}
 
 	if (status)
-		status = add_children(pdata, irq_base, features);
+		status = add_children(pdata, irq_base, twl_data->features);
 
 fail:
 	if (status < 0)
