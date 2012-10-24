@@ -100,6 +100,7 @@
  * Offset from TWL6030_IRQ_BASE / pdata->irq_base
  */
 #define PWR_INTR_OFFSET		0
+#define TWL_VLOW_INTR_OFFSET	6
 #define HOTDIE_INTR_OFFSET	12
 #define SMPSLDO_INTR_OFFSET	13
 #define BATDETECT_INTR_OFFSET	14
