@@ -1326,13 +1326,25 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	if (twl_has_power() && pdata->power)
 		twl4030_power_init(pdata->power);
 
+	twl_data->features = id->driver_data;
+	if (twl_class_is_6030()) {
+		if (twl_i2c_read_u8(TWL_MODULE_USB, &temp,
+						USB_PRODUCT_ID_LSB)) {
+			status = -EIO;
+			goto fail;
+		}
+		if (temp == 0x32)
+			twl_data->features |= TWL6032_SUBCLASS;
+	}
+
 	/* Maybe init the T2 Interrupt subsystem */
 	if (client->irq) {
 		if (twl_class_is_4030()) {
 			twl4030_init_chip_irq(id->name);
 			irq_base = twl4030_init_irq(&client->dev, client->irq);
 		} else {
-			irq_base = twl6030_init_irq(&client->dev, client->irq);
+			irq_base = twl6030_init_irq(&client->dev, client->irq,
+							twl_data->features);
 		}
 
 		if (irq_base < 0) {
@@ -1356,17 +1368,6 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	status = -ENODEV;
 	if (node)
 		status = of_platform_populate(node, NULL, NULL, &client->dev);
-
-	twl_data->features = id->driver_data;
-	if (twl_class_is_6030()) {
-		if (twl_i2c_read_u8(TWL_MODULE_USB, &temp,
-						USB_PRODUCT_ID_LSB)) {
-			status = -EIO;
-			goto fail;
-		}
-		if (temp == 0x32)
-			twl_data->features |= TWL6032_SUBCLASS;
-	}
 
 	if (status)
 		status = add_children(pdata, irq_base, twl_data->features);
