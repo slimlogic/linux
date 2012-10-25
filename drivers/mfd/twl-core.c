@@ -240,6 +240,10 @@
 /* need to access USB_PRODUCT_ID_LSB to identify which 6030 varient we are */
 #define USB_PRODUCT_ID_LSB	0x02
 
+/* need to check eeprom revision and jtagver number */
+#define TWL6030_REG_EPROM_REV	0xdf
+#define TWL6030_REG_JTAGVERNUM	0x87
+
 /*----------------------------------------------------------------------*/
 
 /* is driver active, bound to a chip? */
@@ -1248,6 +1252,7 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	int				status;
 	unsigned			i, num_slaves;
 	u8				temp;
+	u8				twlrev;
 
 	if (node && !pdata) {
 		/*
@@ -1335,6 +1340,29 @@ twl_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		}
 		if (temp == 0x32)
 			twl_data->features |= TWL6032_SUBCLASS;
+
+		if (twl_i2c_read_u8(TWL6030_MODULE_ID2, &twlrev,
+				TWL6030_REG_JTAGVERNUM))
+		{
+			status = -EIO;
+			goto fail;
+		}
+
+		/*
+		 * Check for the errata implementation
+		 * Errata ProDB00119490 present only in the TWL6032 ES1.1
+		 * Errata ProDB00112620 present only in the TWL6030 ES2.1
+		 * Errata ProDB00110684 present only in the TWL6030 ES2.1
+		 */
+		if (twl_data->features & TWL6032_SUBCLASS) {
+			if (twlrev == 1)
+				twl_data->errata |= TWL6032_ERRATA_DB00119490;
+		} else {
+			if (twlrev == 2) {
+				twl_data->errata |= TWL6030_ERRATA_DB00112620;
+				twl_data->errata |= TWL6030_ERRATA_DB00110684;
+			}
+		}
 	}
 
 	/* Maybe init the T2 Interrupt subsystem */
