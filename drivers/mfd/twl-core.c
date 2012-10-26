@@ -127,7 +127,10 @@
 #define twl_has_codec()	false
 #endif
 
-#if defined(CONFIG_CHARGER_TWL4030) || defined(CONFIG_CHARGER_TWL4030_MODULE)
+#if defined(CONFIG_CHARGER_TWL4030) || \
+	defined(CONFIG_CHARGER_TWL4030_MODULE) || \
+	defined(CONFIG_TWL6030_BCI_BATTERY) || \
+	defined(CONFIG_TWL6030_BCI_BATTERY_MODULE)
 #define twl_has_bci()	true
 #else
 #define twl_has_bci()	false
@@ -704,6 +707,14 @@ add_children(struct twl4030_platform_data *pdata, unsigned irq_base,
 			return PTR_ERR(child);
 	}
 
+	if (twl_has_bci() && pdata->bci && twl_class_is_6030()) {
+		child = add_child(0, "twl6030_bci",
+				pdata->bci, sizeof(*pdata->bci),
+				false,
+				irq_base + CHARGER_INTR_OFFSET,
+				irq_base + CHARGERFAULT_INTR_OFFSET);
+	}
+
 	if (twl_has_madc() && pdata->madc) {
 		child = add_child(2, "twl4030_madc",
 				pdata->madc, sizeof(*pdata->madc),
@@ -1107,7 +1118,7 @@ add_children(struct twl4030_platform_data *pdata, unsigned irq_base,
 
 	}
 
-	if (twl_has_bci() && pdata->bci &&
+	if (twl_has_bci() && pdata->bci && twl_class_is_4030() &&
 			!(features & (TPS_SUBSET | TWL5031))) {
 		child = add_child(3, "twl4030_bci",
 				pdata->bci, sizeof(*pdata->bci), false,
