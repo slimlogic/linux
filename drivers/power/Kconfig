@@ -323,6 +323,14 @@ config CHARGER_SMB347
 	  Say Y to include support for Summit Microelectronics SMB347
 	  Battery Charger.
 
+config CHARGER_PALMAS
+	tristate "Palmas Embedded BQ24915 Batter Charger"
+	depends on MFD_PALMAS
+	select MFD_PALMAS_GPADC
+	help
+	  Say Y to include support for the BQ24915 battery charger IP block
+	  within the palmas-charger PMIC IC.
+
 config AB8500_BM
 	bool "AB8500 Battery Management Driver"
 	depends on AB8500_CORE && AB8500_GPADC
