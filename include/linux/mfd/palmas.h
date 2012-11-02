@@ -19,23 +19,33 @@
 #include <linux/leds.h>
 #include <linux/regmap.h>
 #include <linux/regulator/driver.h>
+#include <linux/interrupt.h>
+#include <linux/power_supply.h>
 
-#define PALMAS_NUM_CLIENTS		3
+#define PALMAS_BASE_NUM_CLIENTS		3
+#define PALMAS_CHARGER_NUM_CLIENTS	5
+#define PALMAS_MAX_NUM_CLIENTS		PALMAS_CHARGER_NUM_CLIENTS
 
 /* The ID_REVISION NUMBERS */
 #define PALMAS_CHIP_OLD_ID		0x0000
 #define PALMAS_CHIP_ID			0xC035
+#define PALMAS_CHIP_CHARGER_ID		0xC036
+
+#define is_palmas(a)	(((a) == PALMAS_CHIP_OLD_ID) || \
+			((a) == PALMAS_CHIP_ID))
+#define is_palmas_charger(a) ((a) == PALMAS_CHIP_CHARGER_ID)
 
 struct palmas_pmic;
 struct palmas_gpadc;
 struct palmas_resource;
 struct palmas_usb;
+struct palmas_charger_info;
 
 struct palmas {
 	struct device *dev;
 
-	struct i2c_client *i2c_clients[PALMAS_NUM_CLIENTS];
-	struct regmap *regmap[PALMAS_NUM_CLIENTS];
+	struct i2c_client *i2c_clients[PALMAS_MAX_NUM_CLIENTS];
+	struct regmap *regmap[PALMAS_MAX_NUM_CLIENTS];
 
 	/* Stored chip id */
 	int id;
@@ -46,19 +56,29 @@ struct palmas {
 	int irq;
 	u32 irq_mask;
 	struct mutex irq_lock;
-	struct regmap_irq_chip_data *irq_data;
+	struct regmap_irq_chip_data *irq_data[3];
+	struct irq_domain *virq;
+	int no_irq_slaves;
 
 	/* Child Devices */
 	struct palmas_pmic *pmic;
 	struct palmas_gpadc *gpadc;
 	struct palmas_resource *resource;
 	struct palmas_usb *usb;
+	struct palmas_charger_info *charger;
 
 	/* GPIO MUXing */
-	u8 gpio_muxed;
+	u16 gpio_muxed;
 	u8 led_muxed;
 	u8 pwm_muxed;
 };
+
+extern int palmas_map_irq(struct palmas *palmas, int irq);
+extern int palmas_irq_init(struct palmas *);
+extern int palmas_irq_exit(struct palmas *);
+extern int palmas_request_irq(struct palmas *palmas, int irq, char *name,
+		   irq_handler_t handler, void *data);
+extern void palmas_free_irq(struct palmas *palmas, int irq, void *data);
 
 struct palmas_gpadc_platform_data {
 	/* Channel 3 current source is only enabled during conversion */
@@ -160,6 +180,13 @@ enum palmas_regulators {
 	PALMAS_REG_LDO9,
 	PALMAS_REG_LDOLN,
 	PALMAS_REG_LDOUSB,
+	PALMAS_REG_LDO10,
+	PALMAS_REG_LDO11,
+	PALMAS_REG_LDO12,
+	PALMAS_REG_LDO13,
+	PALMAS_REG_LDO14,
+	/* Special USB Regulator */
+	PALMAS_REG_BOOST,
 	/* Total number of regulators */
 	PALMAS_NUM_REGS,
 };
@@ -226,6 +253,44 @@ struct palmas_clk_platform_data {
 	int clk32kgaudio_mode_sleep;
 };
 
+struct palmas_leds_platform_data {
+	int led1_current;
+	int led2_current;
+	int led3_current;
+	int led4_current;
+
+	int chrg_led_mode;
+	int chrg_led_vbat_low;
+};
+
+/* Battery capacity estimation table */
+struct palmas_batt_capacity_chart {
+	int volt;
+	unsigned int cap;
+};
+
+struct palmas_charger_platform_data {
+	/* Default watchdog timeout */
+	int watchdog_code;
+
+	/* Max IINLIM for USB dedicated charger mode */
+	int usb_charge_limit;
+
+	/* Battery Values */
+	int battery_soldered; /* if battery detection should not be used */
+	int battery_status_interval; /* time in ms for charge status polling */
+	struct palmas_batt_capacity_chart *bat_chart;
+	int bat_chart_size;
+	int battery_capacity_max;
+	int *battery_temperature_chart;
+	int battery_temperature_chart_size;
+
+	/* Fuelgauge Config */
+	int sense_resistor_mohm;
+	int current_avg_interval;
+
+};
+
 struct palmas_platform_data {
 	int gpio_base;
 
@@ -237,13 +302,15 @@ struct palmas_platform_data {
 	 * then the two value to load into the registers if true
 	 */
 	int mux_from_pdata;
-	u8 pad1, pad2;
+	u8 pad1, pad2, pad3, pad4;
 
 	struct palmas_pmic_platform_data *pmic_pdata;
 	struct palmas_gpadc_platform_data *gpadc_pdata;
 	struct palmas_usb_platform_data *usb_pdata;
 	struct palmas_resource_platform_data *resource_pdata;
 	struct palmas_clk_platform_data *clk_pdata;
+	struct palmas_charger_platform_data *charger_pdata;
+	struct palmas_leds_platform_data *leds_pdata;
 };
 
 struct palmas_gpadc_calibration {
@@ -266,8 +333,6 @@ struct palmas_gpadc {
 	struct mutex reading_lock;
 	struct completion irq_complete;
 
-	int eoc_sw_irq;
-
 	struct palmas_gpadc_calibration *palmas_cal_tbl;
 
 	int conv0_channel;
@@ -282,6 +347,11 @@ struct palmas_gpadc_result {
 };
 
 #define PALMAS_MAX_CHANNELS 16
+
+extern int palmas_gpadc_conversion(struct palmas_gpadc *gpadc, int channel,
+				struct palmas_gpadc_result *res);
+extern int palmas_gpadc_current_src_ch0(struct palmas_gpadc *gpadc, int cursel);
+extern int palmas_gpadc_bat_removal(struct palmas_gpadc *gpadc, int enable);
 
 /* Define the palmas IRQ numbers */
 enum palmas_irqs {
@@ -321,6 +391,27 @@ enum palmas_irqs {
 	PALMAS_GPIO_5_IRQ,
 	PALMAS_GPIO_6_IRQ,
 	PALMAS_GPIO_7_IRQ,
+	/* INT5 interrupts */
+	PALMAS_GPIO_8_IRQ,
+	PALMAS_GPIO_9_IRQ,
+	PALMAS_GPIO_10_IRQ,
+	PALMAS_GPIO_11_IRQ,
+	PALMAS_GPIO_12_IRQ,
+	PALMAS_GPIO_14_IRQ,
+	PALMAS_GPIO_15_IRQ,
+	/* INT6 interrupts */
+	PALMAS_CC_EOC_IRQ,
+	PALMAS_CC_SYNC_EOC_IRQ,
+	PALMAS_CC_OVC_LIMIT_IRQ,
+	PALMAS_CC_BAT_STABLE_IRQ,
+	PALMAS_CC_AUTOCAL_IRQ,
+	PALMAS_CHARGER_IRQ,
+	PALMAS_SIM1_IRQ,
+	PALMAS_SIM2_IRQ,
+	/* INT7 interrupts */
+	PALMAS_BAT_CONTACT_BREAK_IRQ,
+	PALMAS_CHRG_IN_ANTICOLLAPSE_IRQ,
+	PALMAS_BAT_TEMP_FAULT_IRQ,
 	/* Total Number IRQs */
 	PALMAS_NUM_IRQ,
 };
@@ -354,11 +445,6 @@ struct palmas_usb {
 
 	/* used to set vbus, in atomic path */
 	struct work_struct set_vbus_work;
-
-	int irq1;
-	int irq2;
-	int irq3;
-	int irq4;
 
 	int vbus_enable;
 
@@ -401,6 +487,94 @@ enum usb_irq_events {
 	N_PALMAS_USB_VOTG_SESS_VLD,
 };
 
+struct palmas_charger_info {
+	struct device *dev;
+	struct palmas *palmas;
+
+	struct work_struct usb_event_work;
+	struct delayed_work palmas_charger_work;
+
+	struct power_supply usb;
+	struct power_supply wireless;
+	struct power_supply battery;
+
+	/* OTP value for current ranged used */
+	int current_range;
+
+	/* Time used for watchdog reset */
+	int watchdog_time;
+	int watchdog_code;
+
+	char reg08;
+	char reg09;
+
+	/* USB power supply */
+	int usb_online_status;
+	int usb_event;
+	int usb_charge_limit;
+
+	/* Wireless power supply */
+	int wireless_online_status;
+
+	/* Battery Power Supply */
+	int battery_voltage_uV;
+	int battery_current_uA;
+	int battery_current_avg_uA;
+	int battery_charge_status;
+	int battery_capacity;
+	int battery_boot_capacity_mAh;
+	int battery_capacity_max;
+	int battery_prev_capacity;
+	int battery_capacity_debounce;
+	int battery_health;
+	int battery_soldered;
+	int battery_online;
+	int battery_timer_n2;
+	int battery_timer_n1;
+	s32 battery_charge_n1;
+	s32 battery_charge_n2;
+	int battery_current_avg_interval;
+	struct delayed_work battery_current_avg_work;
+	int battery_status_interval;
+	struct delayed_work palmas_battery_status_work;
+	struct palmas_batt_capacity_chart *bat_chart;
+	int bat_chart_size;
+	int battery_termperature_tenthC;
+	int *battery_temperature_chart;
+	int battery_temperature_chart_size;
+	int battery_had_fault;
+
+	/* Fuelgauge */
+	int fuelgauge_mode;
+	int cc_offset;
+	int current_max_scale;
+};
+
+/* Palmas Charge USB events */
+#define PALMAS_USB_100mA 		0x01
+#define PALMAS_USB_500mA		0x02
+#define PALMAS_USB_CHARGER		0x03
+#define PALMAS_USB_SUSPEND		0x04
+
+/* REG00 In Current Limits */
+#define PALMAS_IINLIM_100MA		0x00
+#define PALMAS_IINLIM_150MA		0x01
+#define PALMAS_IINLIM_500MA		0x02
+#define PALMAS_IINLIM_900MA		0x03
+#define PALMAS_IINLIM_1200MA		0x04
+#define PALMAS_IINLIM_1500MA		0x05
+#define PALMAS_IINLIM_2000MA		0x06
+#define PALMAS_IINLIM_3000MA		0x07
+
+/* REG05 WATCHDOG */
+#define PALMAS_WATCHDOG_DISABLE		0x00
+#define PALMAS_WATCHDOG_40S		0x01
+#define PALMAS_WATCHDOG_80S		0x02
+#define PALMAS_WATCHDOG_160S		0x03
+
+extern void palmas_charger_usb_vbus_state(struct palmas_charger_info *di,
+		int state);
+
 /* defines so we can store the mux settings */
 #define PALMAS_GPIO_0_MUXED					(1 << 0)
 #define PALMAS_GPIO_1_MUXED					(1 << 1)
@@ -410,6 +584,13 @@ enum usb_irq_events {
 #define PALMAS_GPIO_5_MUXED					(1 << 5)
 #define PALMAS_GPIO_6_MUXED					(1 << 6)
 #define PALMAS_GPIO_7_MUXED					(1 << 7)
+#define PALMAS_GPIO_8_MUXED					(1 << 8)
+#define PALMAS_GPIO_9_MUXED					(1 << 9)
+#define PALMAS_GPIO_10_MUXED					(1 << 10)
+#define PALMAS_GPIO_11_MUXED					(1 << 11)
+#define PALMAS_GPIO_12_MUXED					(1 << 12)
+#define PALMAS_GPIO_14_MUXED					(1 << 14)
+#define PALMAS_GPIO_15_MUXED					(1 << 15)
 
 #define PALMAS_LED1_MUXED					(1 << 0)
 #define PALMAS_LED2_MUXED					(1 << 1)
@@ -428,19 +609,24 @@ enum usb_irq_events {
 #define PALMAS_SMPS_BASE					0x120
 #define PALMAS_LDO_BASE						0x150
 #define PALMAS_DVFS_BASE					0x180
+#define PALMAS_MIPI_BASE					0x19D
+#define PALMAS_SIMCARD_BASE					0x19E
 #define PALMAS_PMU_CONTROL_BASE					0x1A0
 #define PALMAS_RESOURCE_BASE					0x1D4
-#define PALMAS_PU_PD_OD_BASE					0x1F4
+#define PALMAS_PU_PD_OD_BASE					0x1F0
 #define PALMAS_LED_BASE						0x200
 #define PALMAS_INTERRUPT_BASE					0x210
+#define PALMAS_FUEL_GAUGE_BASE					0x230
 #define PALMAS_ID_BASE						0x24F
-#define PALMAS_USB_OTG_BASE					0x250
+#define PALMAS_USB_OTG_BASE					0x253
 #define PALMAS_VIBRATOR_BASE					0x270
+#define PALMAS_INTERRUPT2_BASE					0x272
 #define PALMAS_GPIO_BASE					0x280
 #define PALMAS_USB_BASE						0x290
 #define PALMAS_GPADC_BASE					0x2C0
 #define PALMAS_DESIGNREV_BASE					0x357
 #define PALMAS_TRIM_GPADC_BASE					0x3CD
+#define PALMAS_BQ24192_BASE					0x400
 
 /* Registers for function RTC */
 #define PALMAS_SECONDS_REG					0x0
@@ -652,6 +838,8 @@ enum usb_irq_events {
 #define PALMAS_SMPS12_FORCE					0x2
 #define PALMAS_SMPS12_VOLTAGE					0x3
 #define PALMAS_SMPS3_CTRL					0x4
+#define PALMAS_SMPS3_TSTEP					0x5
+#define PALMAS_SMPS3_FORCE					0x6
 #define PALMAS_SMPS3_VOLTAGE					0x7
 #define PALMAS_SMPS45_CTRL					0x8
 #define PALMAS_SMPS45_TSTEP					0x9
@@ -712,12 +900,24 @@ enum usb_irq_events {
 /* Bit definitions for SMPS3_CTRL */
 #define PALMAS_SMPS3_CTRL_WR_S					0x80
 #define PALMAS_SMPS3_CTRL_WR_S_SHIFT				7
+#define PALMAS_SMPS3_CTRL_ROOF_FLOOR_EN				0x40
+#define PALMAS_SMPS3_CTRL_ROOF_FLOOR_EN_SHIFT			6
 #define PALMAS_SMPS3_CTRL_STATUS_MASK				0x30
 #define PALMAS_SMPS3_CTRL_STATUS_SHIFT				4
 #define PALMAS_SMPS3_CTRL_MODE_SLEEP_MASK			0x0c
 #define PALMAS_SMPS3_CTRL_MODE_SLEEP_SHIFT			2
 #define PALMAS_SMPS3_CTRL_MODE_ACTIVE_MASK			0x03
 #define PALMAS_SMPS3_CTRL_MODE_ACTIVE_SHIFT			0
+
+/* Bit definitions for SMPS3_TSTEP */
+#define PALMAS_SMPS3_TSTEP_TSTEP_MASK				0x03
+#define PALMAS_SMPS3_TSTEP_TSTEP_SHIFT				0
+
+/* Bit definitions for SMPS3_FORCE */
+#define PALMAS_SMPS3_FORCE_CMD					0x80
+#define PALMAS_SMPS3_FORCE_CMD_SHIFT				7
+#define PALMAS_SMPS3_FORCE_VSEL_MASK				0x7f
+#define PALMAS_SMPS3_FORCE_VSEL_SHIFT				0
 
 /* Bit definitions for SMPS3_VOLTAGE */
 #define PALMAS_SMPS3_VOLTAGE_RANGE				0x80
@@ -956,6 +1156,8 @@ enum usb_irq_events {
 /* Bit definitions for SMPS_POWERGOOD_MASK2 */
 #define PALMAS_SMPS_POWERGOOD_MASK2_POWERGOOD_TYPE_SELECT	0x80
 #define PALMAS_SMPS_POWERGOOD_MASK2_POWERGOOD_TYPE_SELECT_SHIFT	7
+#define PALMAS_SMPS_POWERGOOD_MASK2_BATREMOVAL			0x08
+#define PALMAS_SMPS_POWERGOOD_MASK2_BATREMOVAL_SHIFT		3
 #define PALMAS_SMPS_POWERGOOD_MASK2_GPIO_7			0x04
 #define PALMAS_SMPS_POWERGOOD_MASK2_GPIO_7_SHIFT		2
 #define PALMAS_SMPS_POWERGOOD_MASK2_VBUS			0x02
@@ -986,15 +1188,30 @@ enum usb_irq_events {
 #define PALMAS_LDOLN_VOLTAGE					0x13
 #define PALMAS_LDOUSB_CTRL					0x14
 #define PALMAS_LDOUSB_VOLTAGE					0x15
+#define PALMAS_LDO10_CTRL					0x16
+#define PALMAS_LDO10_VOLTAGE					0x17
+#define PALMAS_LDO11_CTRL					0x18
+#define PALMAS_LDO11_VOLTAGE					0x19
 #define PALMAS_LDO_CTRL						0x1A
 #define PALMAS_LDO_PD_CTRL1					0x1B
 #define PALMAS_LDO_PD_CTRL2					0x1C
 #define PALMAS_LDO_SHORT_STATUS1				0x1D
 #define PALMAS_LDO_SHORT_STATUS2				0x1E
+#define PALMAS_LDO12_CTRL					0x1F
+#define PALMAS_LDO12_VOLTAGE					0x20
+#define PALMAS_LDO13_CTRL					0x21
+#define PALMAS_LDO13_VOLTAGE					0x22
+#define PALMAS_LDO14_CTRL					0x23
+#define PALMAS_LDO14_VOLTAGE					0x24
+#define PALMAS_CHARGE_PUMP_CTRL					0x2C
+#define PALMAS_LDO_PD_CTRL3					0x2D
+#define PALMAS_LDO_SHORT_STATUS3				0x2E
 
 /* Bit definitions for LDO1_CTRL */
 #define PALMAS_LDO1_CTRL_WR_S					0x80
 #define PALMAS_LDO1_CTRL_WR_S_SHIFT				7
+#define PALMAS_LDO1_CTRL_LDO_BYPASS_EN				0x40
+#define PALMAS_LDO1_CTRL_LDO_BYPASS_EN_SHIFT			6
 #define PALMAS_LDO1_CTRL_STATUS					0x10
 #define PALMAS_LDO1_CTRL_STATUS_SHIFT				4
 #define PALMAS_LDO1_CTRL_MODE_SLEEP				0x04
@@ -1009,6 +1226,8 @@ enum usb_irq_events {
 /* Bit definitions for LDO2_CTRL */
 #define PALMAS_LDO2_CTRL_WR_S					0x80
 #define PALMAS_LDO2_CTRL_WR_S_SHIFT				7
+#define PALMAS_LDO2_CTRL_LDO_BYPASS_EN				0x40
+#define PALMAS_LDO2_CTRL_LDO_BYPASS_EN_SHIFT			6
 #define PALMAS_LDO2_CTRL_STATUS					0x10
 #define PALMAS_LDO2_CTRL_STATUS_SHIFT				4
 #define PALMAS_LDO2_CTRL_MODE_SLEEP				0x04
@@ -1037,6 +1256,8 @@ enum usb_irq_events {
 /* Bit definitions for LDO4_CTRL */
 #define PALMAS_LDO4_CTRL_WR_S					0x80
 #define PALMAS_LDO4_CTRL_WR_S_SHIFT				7
+#define PALMAS_LDO4_CTRL_LDO_BYPASS				0x40
+#define PALMAS_LDO4_CTRL_LDO_BYPASS_SHIFT			6
 #define PALMAS_LDO4_CTRL_STATUS					0x10
 #define PALMAS_LDO4_CTRL_STATUS_SHIFT				4
 #define PALMAS_LDO4_CTRL_MODE_SLEEP				0x04
@@ -1067,6 +1288,8 @@ enum usb_irq_events {
 #define PALMAS_LDO6_CTRL_WR_S_SHIFT				7
 #define PALMAS_LDO6_CTRL_LDO_VIB_EN				0x40
 #define PALMAS_LDO6_CTRL_LDO_VIB_EN_SHIFT			6
+#define PALMASCH_LDO6_CTRL_LDO_BYPASS_EN			0x40
+#define PALMASCH_LDO6_CTRL_LDO_BYPASS_EN_SHIFT			6
 #define PALMAS_LDO6_CTRL_STATUS					0x10
 #define PALMAS_LDO6_CTRL_STATUS_SHIFT				4
 #define PALMAS_LDO6_CTRL_MODE_SLEEP				0x04
@@ -1121,6 +1344,8 @@ enum usb_irq_events {
 #define PALMAS_LDO9_CTRL_MODE_ACTIVE_SHIFT			0
 
 /* Bit definitions for LDO9_VOLTAGE */
+#define PALMAS_LDO9_VOLTAGE_LDO9_LOW_VREGEN			0x40
+#define PALMAS_LDO9_VOLTAGE_LDO9_LOW_VREGEN_SHIFT		6
 #define PALMAS_LDO9_VOLTAGE_VSEL_MASK				0x3f
 #define PALMAS_LDO9_VOLTAGE_VSEL_SHIFT				0
 
@@ -1152,6 +1377,38 @@ enum usb_irq_events {
 #define PALMAS_LDOUSB_VOLTAGE_VSEL_MASK				0x3f
 #define PALMAS_LDOUSB_VOLTAGE_VSEL_SHIFT			0
 
+/* Bit definitions for LDO10_CTRL */
+#define PALMAS_LDO10_CTRL_WR_S					0x80
+#define PALMAS_LDO10_CTRL_WR_S_SHIFT				7
+#define PALMAS_LDO10_CTRL_LDO_BYPASS_EN				0x40
+#define PALMAS_LDO10_CTRL_LDO_BYPASS_EN_SHIFT			6
+#define PALMAS_LDO10_CTRL_STATUS				0x10
+#define PALMAS_LDO10_CTRL_STATUS_SHIFT				4
+#define PALMAS_LDO10_CTRL_MODE_SLEEP				0x04
+#define PALMAS_LDO10_CTRL_MODE_SLEEP_SHIFT			2
+#define PALMAS_LDO10_CTRL_MODE_ACTIVE				0x01
+#define PALMAS_LDO10_CTRL_MODE_ACTIVE_SHIFT			0
+
+/* Bit definitions for LDO10_VOLTAGE */
+#define PALMAS_LDO10_VOLTAGE_VSEL_MASK				0x3f
+#define PALMAS_LDO10_VOLTAGE_VSEL_SHIFT				0
+
+/* Bit definitions for LDO11_CTRL */
+#define PALMAS_LDO11_CTRL_WR_S					0x80
+#define PALMAS_LDO11_CTRL_WR_S_SHIFT				7
+#define PALMAS_LDO11_CTRL_LDO_BYPASS_EN				0x40
+#define PALMAS_LDO11_CTRL_LDO_BYPASS_EN_SHIFT			6
+#define PALMAS_LDO11_CTRL_STATUS				0x10
+#define PALMAS_LDO11_CTRL_STATUS_SHIFT				4
+#define PALMAS_LDO11_CTRL_MODE_SLEEP				0x04
+#define PALMAS_LDO11_CTRL_MODE_SLEEP_SHIFT			2
+#define PALMAS_LDO11_CTRL_MODE_ACTIVE				0x01
+#define PALMAS_LDO11_CTRL_MODE_ACTIVE_SHIFT			0
+
+/* Bit definitions for LDO11_VOLTAGE */
+#define PALMAS_LDO11_VOLTAGE_VSEL_MASK				0x3f
+#define PALMAS_LDO11_VOLTAGE_VSEL_SHIFT				0
+
 /* Bit definitions for LDO_CTRL */
 #define PALMAS_LDO_CTRL_LDOUSB_ON_VBUS_VSYS			0x01
 #define PALMAS_LDO_CTRL_LDOUSB_ON_VBUS_VSYS_SHIFT		0
@@ -1175,6 +1432,16 @@ enum usb_irq_events {
 #define PALMAS_LDO_PD_CTRL1_LDO1_SHIFT				0
 
 /* Bit definitions for LDO_PD_CTRL2 */
+#define PALMAS_LDO_PD_CTRL2_LDO14				0x80
+#define PALMAS_LDO_PD_CTRL2_LDO14_SHIFT				7
+#define PALMAS_LDO_PD_CTRL2_LDO13				0x40
+#define PALMAS_LDO_PD_CTRL2_LDO13_SHIFT				6
+#define PALMAS_LDO_PD_CTRL2_LDO12				0x20
+#define PALMAS_LDO_PD_CTRL2_LDO12_SHIFT				5
+#define PALMAS_LDO_PD_CTRL2_LDO11				0x10
+#define PALMAS_LDO_PD_CTRL2_LDO11_SHIFT				4
+#define PALMAS_LDO_PD_CTRL2_LDO10				0x08
+#define PALMAS_LDO_PD_CTRL2_LDO10_SHIFT				3
 #define PALMAS_LDO_PD_CTRL2_LDOUSB				0x04
 #define PALMAS_LDO_PD_CTRL2_LDOUSB_SHIFT			2
 #define PALMAS_LDO_PD_CTRL2_LDOLN				0x02
@@ -1201,6 +1468,16 @@ enum usb_irq_events {
 #define PALMAS_LDO_SHORT_STATUS1_LDO1_SHIFT			0
 
 /* Bit definitions for LDO_SHORT_STATUS2 */
+#define PALMAS_LDO_SHORT_STATUS2_LDO14				0x80
+#define PALMAS_LDO_SHORT_STATUS2_LDO14_SHIFT			7
+#define PALMAS_LDO_SHORT_STATUS2_LDO13				0x40
+#define PALMAS_LDO_SHORT_STATUS2_LDO13_SHIFT			6
+#define PALMAS_LDO_SHORT_STATUS2_LDO12				0x20
+#define PALMAS_LDO_SHORT_STATUS2_LDO12_SHIFT			5
+#define PALMAS_LDO_SHORT_STATUS2_LDO11				0x10
+#define PALMAS_LDO_SHORT_STATUS2_LDO11_SHIFT			4
+#define PALMASCH_LDO_SHORT_STATUS2_LDO10			0x08
+#define PALMASCH_LDO_SHORT_STATUS2_LDO10_SHIFT			3
 #define PALMAS_LDO_SHORT_STATUS2_LDOVANA			0x08
 #define PALMAS_LDO_SHORT_STATUS2_LDOVANA_SHIFT			3
 #define PALMAS_LDO_SHORT_STATUS2_LDOUSB				0x04
@@ -1209,6 +1486,78 @@ enum usb_irq_events {
 #define PALMAS_LDO_SHORT_STATUS2_LDOLN_SHIFT			1
 #define PALMAS_LDO_SHORT_STATUS2_LDO9				0x01
 #define PALMAS_LDO_SHORT_STATUS2_LDO9_SHIFT			0
+
+/* Bit definitions for LDO12_CTRL */
+#define PALMAS_LDO12_CTRL_WR_S					0x80
+#define PALMAS_LDO12_CTRL_WR_S_SHIFT				7
+#define PALMAS_LDO12_CTRL_LDO_BYPASS_EN				0x40
+#define PALMAS_LDO12_CTRL_LDO_BYPASS_EN_SHIFT			6
+#define PALMAS_LDO12_CTRL_STATUS				0x10
+#define PALMAS_LDO12_CTRL_STATUS_SHIFT				4
+#define PALMAS_LDO12_CTRL_MODE_SLEEP				0x04
+#define PALMAS_LDO12_CTRL_MODE_SLEEP_SHIFT			2
+#define PALMAS_LDO12_CTRL_MODE_ACTIVE				0x01
+#define PALMAS_LDO12_CTRL_MODE_ACTIVE_SHIFT			0
+
+/* Bit definitions for LDO12_VOLTAGE */
+#define PALMAS_LDO12_VOLTAGE_VSEL_MASK				0x3f
+#define PALMAS_LDO12_VOLTAGE_VSEL_SHIFT				0
+
+/* Bit definitions for LDO13_CTRL */
+#define PALMAS_LDO13_CTRL_WR_S					0x80
+#define PALMAS_LDO13_CTRL_WR_S_SHIFT				7
+#define PALMAS_LDO13_CTRL_LDO_BYPASS_EN				0x40
+#define PALMAS_LDO13_CTRL_LDO_BYPASS_EN_SHIFT			6
+#define PALMAS_LDO13_CTRL_STATUS				0x10
+#define PALMAS_LDO13_CTRL_STATUS_SHIFT				4
+#define PALMAS_LDO13_CTRL_MODE_SLEEP				0x04
+#define PALMAS_LDO13_CTRL_MODE_SLEEP_SHIFT			2
+#define PALMAS_LDO13_CTRL_MODE_ACTIVE				0x01
+#define PALMAS_LDO13_CTRL_MODE_ACTIVE_SHIFT			0
+
+/* Bit definitions for LDO13_VOLTAGE */
+#define PALMAS_LDO13_VOLTAGE_VSEL_MASK				0x3f
+#define PALMAS_LDO13_VOLTAGE_VSEL_SHIFT				0
+
+/* Bit definitions for LDO14_CTRL */
+#define PALMAS_LDO14_CTRL_WR_S					0x80
+#define PALMAS_LDO14_CTRL_WR_S_SHIFT				7
+#define PALMAS_LDO14_CTRL_LDO_BYPASS_EN				0x40
+#define PALMAS_LDO14_CTRL_LDO_BYPASS_EN_SHIFT			6
+#define PALMAS_LDO14_CTRL_STATUS				0x10
+#define PALMAS_LDO14_CTRL_STATUS_SHIFT				4
+#define PALMAS_LDO14_CTRL_MODE_SLEEP				0x04
+#define PALMAS_LDO14_CTRL_MODE_SLEEP_SHIFT			2
+#define PALMAS_LDO14_CTRL_MODE_ACTIVE				0x01
+#define PALMAS_LDO14_CTRL_MODE_ACTIVE_SHIFT			0
+
+/* Bit definitions for LDO14_VOLTAGE */
+#define PALMAS_LDO14_VOLTAGE_VSEL_MASK				0x3f
+#define PALMAS_LDO14_VOLTAGE_VSEL_SHIFT				0
+
+/* Bit definitions for CHARGE_PUMP_CTRL */
+#define PALMAS_CHARGE_PUMP_CTRL_CP_CLK				0x80
+#define PALMAS_CHARGE_PUMP_CTRL_CP_CLK_SHIFT			7
+#define PALMAS_CHARGE_PUMP_CTRL_CP_VSEL				0x40
+#define PALMAS_CHARGE_PUMP_CTRL_CP_VSEL_SHIFT			6
+#define PALMAS_CHARGE_PUMP_CTRL_STATUS				0x10
+#define PALMAS_CHARGE_PUMP_CTRL_STATUS_SHIFT			4
+#define PALMAS_CHARGE_PUMP_CTRL_MODE_SLEEP			0x04
+#define PALMAS_CHARGE_PUMP_CTRL_MODE_SLEEP_SHIFT		2
+#define PALMAS_CHARGE_PUMP_CTRL_MODE_ACTIVE			0x01
+#define PALMAS_CHARGE_PUMP_CTRL_MODE_ACTIVE_SHIFT		0
+
+/* Bit definitions for LDO_PD_CTRL3 */
+#define PALMAS_LDO_PD_CTRL3_LDOVANA				0x80
+#define PALMAS_LDO_PD_CTRL3_LDOVANA_SHIFT			7
+#define PALMAS_LDO_PD_CTRL3_CHARGE_PUMP				0x01
+#define PALMAS_LDO_PD_CTRL3_CHARGE_PUMP_SHIFT			0
+
+/* Bit definitions for LDO_SHORT_STATUS3 */
+#define PALMAS_LDO_SHORT_STATUS3_LDOVANA			0x80
+#define PALMAS_LDO_SHORT_STATUS3_LDOVANA_SHIFT			7
+#define PALMAS_LDO_SHORT_STATUS3_CHARGE_PUMP			0x01
+#define PALMAS_LDO_SHORT_STATUS3_CHARGE_PUMP_SHIFT		0
 
 /* Registers for function PMU_CONTROL */
 #define PALMAS_DEV_CTRL						0x0
@@ -1223,17 +1572,26 @@ enum usb_irq_events {
 #define PALMAS_LONG_PRESS_KEY					0x9
 #define PALMAS_OSC_THERM_CTRL					0xA
 #define PALMAS_BATDEBOUNCING					0xB
+#define PALMAS_SWOFF_HWRST2					0xC
+#define PALMAS_SWOFF_COLDRST2					0xD
+#define PALMAS_SWOFF_STATUS2					0xE
 #define PALMAS_SWOFF_HWRST					0xF
 #define PALMAS_SWOFF_COLDRST					0x10
 #define PALMAS_SWOFF_STATUS					0x11
 #define PALMAS_PMU_CONFIG					0x12
-#define PALMAS_SPARE						0x14
+#define PALMAS_PMU_CTRL2					0x13
 #define PALMAS_PMU_SECONDARY_INT				0x15
 #define PALMAS_SW_REVISION					0x17
 #define PALMAS_EXT_CHRG_CTRL					0x18
 #define PALMAS_PMU_SECONDARY_INT2				0x19
+#define PALMAS_USB_CHGCTL1					0x1A
+#define PALMAS_CHRG_CTRL2					0x1B
+#define PALMAS_OTP_SPARE8					0x1C
+#define PALMAS_OTP_SPARE9					0x1D
 
 /* Bit definitions for DEV_CTRL */
+#define PALMAS_DEV_CTRL_OSC_FAILURE				0x80
+#define PALMAS_DEV_CTRL_OSC_FAILURE_SHIFT			7
 #define PALMAS_DEV_CTRL_DEV_STATUS_MASK				0x0c
 #define PALMAS_DEV_CTRL_DEV_STATUS_SHIFT			2
 #define PALMAS_DEV_CTRL_SW_RST					0x02
@@ -1276,6 +1634,8 @@ enum usb_irq_events {
 #define PALMAS_WATCHDOG_TIMER_SHIFT				0
 
 /* Bit definitions for BOOT_STATUS */
+#define PALMAS_BOOT_STATUS_RCM					0x80
+#define PALMAS_BOOT_STATUS_RCM_SHIFT				7
 #define PALMAS_BOOT_STATUS_BOOT1				0x02
 #define PALMAS_BOOT_STATUS_BOOT1_SHIFT				1
 #define PALMAS_BOOT_STATUS_BOOT0				0x01
@@ -1334,6 +1694,18 @@ enum usb_irq_events {
 #define PALMAS_BATDEBOUNCING_BINS_DEB_SHIFT			3
 #define PALMAS_BATDEBOUNCING_BEXT_DEB_MASK			0x07
 #define PALMAS_BATDEBOUNCING_BEXT_DEB_SHIFT			0
+
+/* Bit definitions for SWOFF_HWRST2 */
+#define PALMAS_SWOFF_HWRST2_DBRST				0x01
+#define PALMAS_SWOFF_HWRST2_DBRST_SHIFT				0
+
+/* Bit definitions for SWOFF_COLDRST2 */
+#define PALMAS_SWOFF_COLDRST2_DBRST				0x01
+#define PALMAS_SWOFF_COLDRST2_DBRST_SHIFT			0
+
+/* Bit definitions for SWOFF_STATUS2 */
+#define PALMAS_SWOFF_STATUS2_DBRST				0x01
+#define PALMAS_SWOFF_STATUS2_DBRST_SHIFT			0
 
 /* Bit definitions for SWOFF_HWRST */
 #define PALMAS_SWOFF_HWRST_PWRON_LPK				0x80
@@ -1401,15 +1773,23 @@ enum usb_irq_events {
 #define PALMAS_PMU_CONFIG_AUTODEVON				0x01
 #define PALMAS_PMU_CONFIG_AUTODEVON_SHIFT			0
 
-/* Bit definitions for SPARE */
-#define PALMAS_SPARE_SPARE_MASK					0xf8
-#define PALMAS_SPARE_SPARE_SHIFT				3
-#define PALMAS_SPARE_REGEN3_OD					0x04
-#define PALMAS_SPARE_REGEN3_OD_SHIFT				2
-#define PALMAS_SPARE_REGEN2_OD					0x02
-#define PALMAS_SPARE_REGEN2_OD_SHIFT				1
-#define PALMAS_SPARE_REGEN1_OD					0x01
-#define PALMAS_SPARE_REGEN1_OD_SHIFT				0
+/* Bit definitions for PMU_CTRL2 */
+#define PALMAS_PMU_CTRL2_SPARE7					0x80
+#define PALMAS_PMU_CTRL2_SPARE7_SHIFT				7
+#define PALMAS_PMU_CTRL2_SPARE6					0x40
+#define PALMAS_PMU_CTRL2_SPARE6_SHIFT				6
+#define PALMAS_PMU_CTRL2_RESET_IN_IS_WARMRESET			0x20
+#define PALMAS_PMU_CTRL2_RESET_IN_IS_WARMRESET_SHIFT		5
+#define PALMAS_PMU_CTRL2_SPARE4					0x10
+#define PALMAS_PMU_CTRL2_SPARE4_SHIFT				4
+#define PALMAS_PMU_CTRL2_INT_LINE_DIS				0x08
+#define PALMAS_PMU_CTRL2_INT_LINE_DIS_SHIFT			3
+#define PALMAS_PMU_CTRL2_WDT_HOLD_IN_SLEEP			0x04
+#define PALMAS_PMU_CTRL2_WDT_HOLD_IN_SLEEP_SHIFT		2
+#define PALMAS_PMU_CTRL2_PWRDOWN_FASTOFF			0x02
+#define PALMAS_PMU_CTRL2_PWRDOWN_FASTOFF_SHIFT			1
+#define PALMAS_PMU_CTRL2_TSHUT_FASTOFF				0x01
+#define PALMAS_PMU_CTRL2_TSHUT_FASTOFF_SHIFT			0
 
 /* Bit definitions for PMU_SECONDARY_INT */
 #define PALMAS_PMU_SECONDARY_INT_VBUS_OVV_INT_SRC		0x80
@@ -1438,6 +1818,8 @@ enum usb_irq_events {
 #define PALMAS_EXT_CHRG_CTRL_VBUS_OVV_STATUS_SHIFT		7
 #define PALMAS_EXT_CHRG_CTRL_CHARG_DET_N_STATUS			0x40
 #define PALMAS_EXT_CHRG_CTRL_CHARG_DET_N_STATUS_SHIFT		6
+#define PALMAS_EXT_CHRG_CTRL_VAC_COMP_EN			0x10
+#define PALMAS_EXT_CHRG_CTRL_VAC_COMP_EN_SHIFT			4
 #define PALMAS_EXT_CHRG_CTRL_VSYS_DEBOUNCE_DELAY		0x08
 #define PALMAS_EXT_CHRG_CTRL_VSYS_DEBOUNCE_DELAY_SHIFT		3
 #define PALMAS_EXT_CHRG_CTRL_CHRG_DET_N				0x04
@@ -1456,6 +1838,44 @@ enum usb_irq_events {
 #define PALMAS_PMU_SECONDARY_INT2_DVFS2_MASK_SHIFT		1
 #define PALMAS_PMU_SECONDARY_INT2_DVFS1_MASK			0x01
 #define PALMAS_PMU_SECONDARY_INT2_DVFS1_MASK_SHIFT		0
+
+/* Bit definitions for USB_CHGCTL1 */
+#define PALMAS_USB_CHGCTL1_SPARE				0x80
+#define PALMAS_USB_CHGCTL1_SPARE_SHIFT				7
+#define PALMAS_USB_CHGCTL1_USB_ID_STATUS_MASK			0x70
+#define PALMAS_USB_CHGCTL1_USB_ID_STATUS_SHIFT			4
+#define PALMAS_USB_CHGCTL1_USB_HICURRENT			0x08
+#define PALMAS_USB_CHGCTL1_USB_HICURRENT_SHIFT			3
+#define PALMAS_USB_CHGCTL1_USB_SUSPEND				0x04
+#define PALMAS_USB_CHGCTL1_USB_SUSPEND_SHIFT			2
+#define PALMAS_USB_CHGCTL1_VOTG_SEE_VLD				0x02
+#define PALMAS_USB_CHGCTL1_VOTG_SEE_VLD_SHIFT			1
+#define PALMAS_USB_CHGCTL1_LOW_BAT				0x01
+#define PALMAS_USB_CHGCTL1_LOW_BAT_SHIFT			0
+
+/* Bit definitions for CHRG_CTRL2 */
+#define PALMAS_CHRG_CTRL2_CHRG_STS_MASK				0xc0
+#define PALMAS_CHRG_CTRL2_CHRG_STS_SHIFT			6
+#define PALMAS_CHRG_CTRL2_VBUS_SWITCH_STS			0x20
+#define PALMAS_CHRG_CTRL2_VBUS_SWITCH_STS_SHIFT			5
+#define PALMAS_CHRG_CTRL2_WIRELESS_STS				0x10
+#define PALMAS_CHRG_CTRL2_WIRELESS_STS_SHIFT			4
+#define PALMAS_CHRG_CTRL2_BOOST_EN				0x08
+#define PALMAS_CHRG_CTRL2_BOOST_EN_SHIFT			3
+#define PALMAS_CHRG_CTRL2_WIRELESS_DISABLE			0x04
+#define PALMAS_CHRG_CTRL2_WIRELESS_DISABLE_SHIFT		2
+#define PALMAS_CHRG_CTRL2_DCDC_DISABLE_SHUTDOWN			0x02
+#define PALMAS_CHRG_CTRL2_DCDC_DISABLE_SHUTDOWN_SHIFT		1
+#define PALMAS_CHRG_CTRL2_DCDC_DISABLE				0x01
+#define PALMAS_CHRG_CTRL2_DCDC_DISABLE_SHIFT			0
+
+/* Bit definitions for OTP_SPARE8 */
+#define PALMAS_OTP_SPARE8_SPARE_MASK				0xff
+#define PALMAS_OTP_SPARE8_SPARE_SHIFT				0
+
+/* Bit definitions for OTP_SPARE9 */
+#define PALMAS_OTP_SPARE9_SPARE_MASK				0xff
+#define PALMAS_OTP_SPARE9_SPARE_SHIFT				0
 
 /* Registers for function RESOURCE */
 #define PALMAS_CLK32KG_CTRL					0x0
@@ -1477,6 +1897,12 @@ enum usb_irq_events {
 #define PALMAS_ENABLE2_LDO_ASSIGN1				0x10
 #define PALMAS_ENABLE2_LDO_ASSIGN2				0x11
 #define PALMAS_REGEN3_CTRL					0x12
+#define PALMAS_REGEN4_CTRL					0x13
+#define PALMAS_REGEN5_CTRL					0x14
+#define PALMAS_REGEN7_CTRL					0x16
+#define PALMAS_NSLEEP_RES_ASSIGN2				0x18
+#define PALMAS_ENABLE1_RES_ASSIGN2				0x19
+#define PALMAS_ENABLE2_RES_ASSIGN2				0x1A
 
 /* Bit definitions for CLK32KG_CTRL */
 #define PALMAS_CLK32KG_CTRL_STATUS				0x10
@@ -1529,6 +1955,8 @@ enum usb_irq_events {
 #define PALMAS_SYSEN2_CTRL_MODE_ACTIVE_SHIFT			0
 
 /* Bit definitions for NSLEEP_RES_ASSIGN */
+#define PALMAS_NSLEEP_RES_ASSIGN_REGEN4				0x80
+#define PALMAS_NSLEEP_RES_ASSIGN_REGEN4_SHIFT			7
 #define PALMAS_NSLEEP_RES_ASSIGN_REGEN3				0x40
 #define PALMAS_NSLEEP_RES_ASSIGN_REGEN3_SHIFT			6
 #define PALMAS_NSLEEP_RES_ASSIGN_CLK32KGAUDIO			0x20
@@ -1581,6 +2009,16 @@ enum usb_irq_events {
 #define PALMAS_NSLEEP_LDO_ASSIGN1_LDO1_SHIFT			0
 
 /* Bit definitions for NSLEEP_LDO_ASSIGN2 */
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO14				0x80
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO14_SHIFT			7
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO13				0x40
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO13_SHIFT			6
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO12				0x20
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO12_SHIFT			5
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO11				0x10
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO11_SHIFT			4
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO10				0x08
+#define PALMAS_NSLEEP_LDO_ASSIGN2_LDO10_SHIFT			3
 #define PALMAS_NSLEEP_LDO_ASSIGN2_LDOUSB			0x04
 #define PALMAS_NSLEEP_LDO_ASSIGN2_LDOUSB_SHIFT			2
 #define PALMAS_NSLEEP_LDO_ASSIGN2_LDOLN				0x02
@@ -1589,6 +2027,8 @@ enum usb_irq_events {
 #define PALMAS_NSLEEP_LDO_ASSIGN2_LDO9_SHIFT			0
 
 /* Bit definitions for ENABLE1_RES_ASSIGN */
+#define PALMAS_ENABLE1_RES_ASSIGN_REGEN4			0x80
+#define PALMAS_ENABLE1_RES_ASSIGN_REGEN4_SHIFT			7
 #define PALMAS_ENABLE1_RES_ASSIGN_REGEN3			0x40
 #define PALMAS_ENABLE1_RES_ASSIGN_REGEN3_SHIFT			6
 #define PALMAS_ENABLE1_RES_ASSIGN_CLK32KGAUDIO			0x20
@@ -1641,6 +2081,16 @@ enum usb_irq_events {
 #define PALMAS_ENABLE1_LDO_ASSIGN1_LDO1_SHIFT			0
 
 /* Bit definitions for ENABLE1_LDO_ASSIGN2 */
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO14			0x80
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO14_SHIFT			7
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO13			0x40
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO13_SHIFT			6
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO12			0x20
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO12_SHIFT			5
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO11			0x10
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO11_SHIFT			4
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO10			0x08
+#define PALMAS_ENABLE1_LDO_ASSIGN2_LDO10_SHIFT			3
 #define PALMAS_ENABLE1_LDO_ASSIGN2_LDOUSB			0x04
 #define PALMAS_ENABLE1_LDO_ASSIGN2_LDOUSB_SHIFT			2
 #define PALMAS_ENABLE1_LDO_ASSIGN2_LDOLN			0x02
@@ -1649,6 +2099,8 @@ enum usb_irq_events {
 #define PALMAS_ENABLE1_LDO_ASSIGN2_LDO9_SHIFT			0
 
 /* Bit definitions for ENABLE2_RES_ASSIGN */
+#define PALMAS_ENABLE2_RES_ASSIGN_REGEN4			0x80
+#define PALMAS_ENABLE2_RES_ASSIGN_REGEN4_SHIFT			7
 #define PALMAS_ENABLE2_RES_ASSIGN_REGEN3			0x40
 #define PALMAS_ENABLE2_RES_ASSIGN_REGEN3_SHIFT			6
 #define PALMAS_ENABLE2_RES_ASSIGN_CLK32KGAUDIO			0x20
@@ -1701,6 +2153,16 @@ enum usb_irq_events {
 #define PALMAS_ENABLE2_LDO_ASSIGN1_LDO1_SHIFT			0
 
 /* Bit definitions for ENABLE2_LDO_ASSIGN2 */
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO14			0x80
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO14_SHIFT			7
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO13			0x40
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO13_SHIFT			6
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO12			0x20
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO12_SHIFT			5
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO11			0x10
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO11_SHIFT			4
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO10			0x08
+#define PALMAS_ENABLE2_LDO_ASSIGN2_LDO10_SHIFT			3
 #define PALMAS_ENABLE2_LDO_ASSIGN2_LDOUSB			0x04
 #define PALMAS_ENABLE2_LDO_ASSIGN2_LDOUSB_SHIFT			2
 #define PALMAS_ENABLE2_LDO_ASSIGN2_LDOLN			0x02
@@ -1716,17 +2178,93 @@ enum usb_irq_events {
 #define PALMAS_REGEN3_CTRL_MODE_ACTIVE				0x01
 #define PALMAS_REGEN3_CTRL_MODE_ACTIVE_SHIFT			0
 
+/* Bit definitions for REGEN4_CTRL */
+#define PALMAS_REGEN4_CTRL_STATUS				0x10
+#define PALMAS_REGEN4_CTRL_STATUS_SHIFT				4
+#define PALMAS_REGEN4_CTRL_MODE_SLEEP				0x04
+#define PALMAS_REGEN4_CTRL_MODE_SLEEP_SHIFT			2
+#define PALMAS_REGEN4_CTRL_MODE_ACTIVE				0x01
+#define PALMAS_REGEN4_CTRL_MODE_ACTIVE_SHIFT			0
+
+/* Bit definitions for REGEN5_CTRL */
+#define PALMAS_REGEN5_CTRL_STATUS				0x10
+#define PALMAS_REGEN5_CTRL_STATUS_SHIFT				4
+#define PALMAS_REGEN5_CTRL_MODE_SLEEP				0x04
+#define PALMAS_REGEN5_CTRL_MODE_SLEEP_SHIFT			2
+#define PALMAS_REGEN5_CTRL_MODE_ACTIVE				0x01
+#define PALMAS_REGEN5_CTRL_MODE_ACTIVE_SHIFT			0
+
+/* Bit definitions for REGEN7_CTRL */
+#define PALMAS_REGEN7_CTRL_STATUS				0x10
+#define PALMAS_REGEN7_CTRL_STATUS_SHIFT				4
+#define PALMAS_REGEN7_CTRL_MODE_SLEEP				0x04
+#define PALMAS_REGEN7_CTRL_MODE_SLEEP_SHIFT			2
+#define PALMAS_REGEN7_CTRL_MODE_ACTIVE				0x01
+#define PALMAS_REGEN7_CTRL_MODE_ACTIVE_SHIFT			0
+
+/* Bit definitions for NSLEEP_RES_ASSIGN2 */
+#define PALMAS_NSLEEP_RES_ASSIGN2_CHARGE_PUMP			0x08
+#define PALMAS_NSLEEP_RES_ASSIGN2_CHARGE_PUMP_SHIFT		3
+#define PALMAS_NSLEEP_RES_ASSIGN2_REGEN7			0x04
+#define PALMAS_NSLEEP_RES_ASSIGN2_REGEN7_SHIFT			2
+#define PALMAS_NSLEEP_RES_ASSIGN2_REGEN5			0x01
+#define PALMAS_NSLEEP_RES_ASSIGN2_REGEN5_SHIFT			0
+
+/* Bit definitions for ENABLE1_RES_ASSIGN2 */
+#define PALMAS_ENABLE1_RES_ASSIGN2_CHARGE_PUMP			0x08
+#define PALMAS_ENABLE1_RES_ASSIGN2_CHARGE_PUMP_SHIFT		3
+#define PALMAS_ENABLE1_RES_ASSIGN2_REGEN7			0x04
+#define PALMAS_ENABLE1_RES_ASSIGN2_REGEN7_SHIFT			2
+#define PALMAS_ENABLE1_RES_ASSIGN2_REGEN5			0x01
+#define PALMAS_ENABLE1_RES_ASSIGN2_REGEN5_SHIFT			0
+
+/* Bit definitions for ENABLE2_RES_ASSIGN2 */
+#define PALMAS_ENABLE2_RES_ASSIGN2_CHARGE_PUMP			0x08
+#define PALMAS_ENABLE2_RES_ASSIGN2_CHARGE_PUMP_SHIFT		3
+#define PALMAS_ENABLE2_RES_ASSIGN2_REGEN7			0x04
+#define PALMAS_ENABLE2_RES_ASSIGN2_REGEN7_SHIFT			2
+#define PALMAS_ENABLE2_RES_ASSIGN2_REGEN5			0x01
+#define PALMAS_ENABLE2_RES_ASSIGN2_REGEN5_SHIFT			0
+
 /* Registers for function PAD_CONTROL */
-#define PALMAS_PU_PD_INPUT_CTRL1				0x0
-#define PALMAS_PU_PD_INPUT_CTRL2				0x1
-#define PALMAS_PU_PD_INPUT_CTRL3				0x2
-#define PALMAS_OD_OUTPUT_CTRL					0x4
-#define PALMAS_POLARITY_CTRL					0x5
-#define PALMAS_PRIMARY_SECONDARY_PAD1				0x6
-#define PALMAS_PRIMARY_SECONDARY_PAD2				0x7
-#define PALMAS_I2C_SPI						0x8
-#define PALMAS_PU_PD_INPUT_CTRL4				0x9
-#define PALMAS_PRIMARY_SECONDARY_PAD3				0xA
+#define PALMAS_OD_OUTPUT_CTRL2					0x2
+#define PALMAS_POLARITY_CTRL2					0x3
+#define PALMAS_PU_PD_INPUT_CTRL1				0x4
+#define PALMAS_PU_PD_INPUT_CTRL2				0x5
+#define PALMAS_PU_PD_INPUT_CTRL3				0x6
+#define PALMAS_PU_PD_INPUT_CTRL5				0x7
+#define PALMAS_OD_OUTPUT_CTRL					0x8
+#define PALMAS_POLARITY_CTRL					0x9
+#define PALMAS_PRIMARY_SECONDARY_PAD1				0xA
+#define PALMAS_PRIMARY_SECONDARY_PAD2				0xB
+#define PALMAS_I2C						0xC
+#define PALMAS_PU_PD_INPUT_CTRL4				0xD
+#define PALMAS_PRIMARY_SECONDARY_PAD3				0xE
+#define PALMAS_PRIMARY_SECONDARY_PAD4				0xF
+
+/* Bit definitions for OD_OUTPUT_CTRL2 */
+#define PALMAS_OD_OUTPUT_CTRL2_POWERGOOD_OD			0x80
+#define PALMAS_OD_OUTPUT_CTRL2_POWERGOOD_OD_SHIFT		7
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN7_OD			0x40
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN7_OD_SHIFT			6
+#define PALMAS_OD_OUTPUT_CTRL2_SPARE				0x20
+#define PALMAS_OD_OUTPUT_CTRL2_SPARE_SHIFT			5
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN5_OD			0x10
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN5_OD_SHIFT			4
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN4_OD			0x08
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN4_OD_SHIFT			3
+#define PALMAS_OD_OUTPUT_CTRL2_SPARE2				0x04
+#define PALMAS_OD_OUTPUT_CTRL2_SPARE2_SHIFT			2
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN2_OD			0x02
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN2_OD_SHIFT			1
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN1_OD			0x01
+#define PALMAS_OD_OUTPUT_CTRL2_REGEN1_OD_SHIFT			0
+
+/* Bit definitions for POLARITY_CTRL2 */
+#define PALMAS_POLARITY_CTRL2_ACOK_POLARITY			0x02
+#define PALMAS_POLARITY_CTRL2_ACOK_POLARITY_SHIFT		1
+#define PALMAS_POLARITY_CTRL2_DET_POLARITY			0x01
+#define PALMAS_POLARITY_CTRL2_DET_POLARITY_SHIFT		0
 
 /* Bit definitions for PU_PD_INPUT_CTRL1 */
 #define PALMAS_PU_PD_INPUT_CTRL1_RESET_IN_PD			0x40
@@ -1764,6 +2302,24 @@ enum usb_irq_events {
 #define PALMAS_PU_PD_INPUT_CTRL3_MSECURE_PD			0x01
 #define PALMAS_PU_PD_INPUT_CTRL3_MSECURE_PD_SHIFT		0
 
+/* Bit definitions for PU_PD_INPUT_CTRL5 */
+#define PALMAS_PU_PD_INPUT_CTRL5_DET2_PU			0x80
+#define PALMAS_PU_PD_INPUT_CTRL5_DET2_PU_SHIFT			7
+#define PALMAS_PU_PD_INPUT_CTRL5_DET2_PD			0x40
+#define PALMAS_PU_PD_INPUT_CTRL5_DET2_PD_SHIFT			6
+#define PALMAS_PU_PD_INPUT_CTRL5_DET1_PU			0x20
+#define PALMAS_PU_PD_INPUT_CTRL5_DET1_PU_SHIFT			5
+#define PALMAS_PU_PD_INPUT_CTRL5_DET1_PD			0x10
+#define PALMAS_PU_PD_INPUT_CTRL5_DET1_PD_SHIFT			4
+#define PALMAS_PU_PD_INPUT_CTRL5_RESERVED3			0x08
+#define PALMAS_PU_PD_INPUT_CTRL5_RESERVED3_SHIFT		3
+#define PALMAS_PU_PD_INPUT_CTRL5_RESERVED2			0x04
+#define PALMAS_PU_PD_INPUT_CTRL5_RESERVED2_SHIFT		2
+#define PALMAS_PU_PD_INPUT_CTRL5_RESERVED1			0x02
+#define PALMAS_PU_PD_INPUT_CTRL5_RESERVED1_SHIFT		1
+#define PALMAS_PU_PD_INPUT_CTRL5_RESERVED0			0x01
+#define PALMAS_PU_PD_INPUT_CTRL5_RESERVED0_SHIFT		0
+
 /* Bit definitions for OD_OUTPUT_CTRL */
 #define PALMAS_OD_OUTPUT_CTRL_PWM_2_OD				0x80
 #define PALMAS_OD_OUTPUT_CTRL_PWM_2_OD_SHIFT			7
@@ -1789,6 +2345,8 @@ enum usb_irq_events {
 #define PALMAS_POLARITY_CTRL_GPIO_3_CHRG_DET_N_POLARITY_SHIFT	2
 #define PALMAS_POLARITY_CTRL_POWERGOOD_USB_PSEL_POLARITY	0x02
 #define PALMAS_POLARITY_CTRL_POWERGOOD_USB_PSEL_POLARITY_SHIFT	1
+#define PALMASCH_POLARITY_CTRL_POWERGOOD_POLARITY		0x02
+#define PALMASCH_POLARITY_CTRL_POWERGOOD_POLARITY_SHIFT		1
 #define PALMAS_POLARITY_CTRL_PWRDOWN_POLARITY			0x01
 #define PALMAS_POLARITY_CTRL_PWRDOWN_POLARITY_SHIFT		0
 
@@ -1807,6 +2365,8 @@ enum usb_irq_events {
 #define PALMAS_PRIMARY_SECONDARY_PAD1_POWERGOOD_SHIFT		0
 
 /* Bit definitions for PRIMARY_SECONDARY_PAD2 */
+#define PALMASCH_PRIMARY_SECONDARY_PAD2_GPIO_4_MSB		0x40
+#define PALMAS_PRIMARY_SECONDARY_PAD2_GPIO_4_MSB_SHIFT		6
 #define PALMAS_PRIMARY_SECONDARY_PAD2_GPIO_7_MASK		0x30
 #define PALMAS_PRIMARY_SECONDARY_PAD2_GPIO_7_SHIFT		4
 #define PALMAS_PRIMARY_SECONDARY_PAD2_GPIO_6			0x08
@@ -1815,6 +2375,8 @@ enum usb_irq_events {
 #define PALMAS_PRIMARY_SECONDARY_PAD2_GPIO_5_SHIFT		1
 #define PALMAS_PRIMARY_SECONDARY_PAD2_GPIO_4			0x01
 #define PALMAS_PRIMARY_SECONDARY_PAD2_GPIO_4_SHIFT		0
+#define PALMASCH_PRIMARY_SECONDARY_PAD2_GPIO_4_LSB		0x01
+#define PALMASCH_PRIMARY_SECONDARY_PAD2_GPIO_4_LSB_SHIFT	0
 
 /* Bit definitions for I2C_SPI */
 #define PALMAS_I2C_SPI_I2C2OTP_EN				0x80
@@ -1839,16 +2401,40 @@ enum usb_irq_events {
 #define PALMAS_PU_PD_INPUT_CTRL4_DVFS1_CLK_PD_SHIFT		0
 
 /* Bit definitions for PRIMARY_SECONDARY_PAD3 */
+#define PALMAS_PRIMARY_SECONDARY_PAD3_GPO			0x04
+#define PALMAS_PRIMARY_SECONDARY_PAD3_GPO_SHIFT			2
 #define PALMAS_PRIMARY_SECONDARY_PAD3_DVFS2			0x02
 #define PALMAS_PRIMARY_SECONDARY_PAD3_DVFS2_SHIFT		1
 #define PALMAS_PRIMARY_SECONDARY_PAD3_DVFS1			0x01
 #define PALMAS_PRIMARY_SECONDARY_PAD3_DVFS1_SHIFT		0
+
+/* Bit definitions for PRIMARY_SECONDARY_PAD4 */
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_15			0x80
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_15_SHIFT		7
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_14			0x40
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_14_SHIFT		6
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_12			0x10
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_12_SHIFT		4
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_11			0x08
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_11_SHIFT		3
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_10			0x04
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_10_SHIFT		2
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_9			0x02
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_9_SHIFT		1
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_8			0x01
+#define PALMAS_PRIMARY_SECONDARY_PAD4_GPIO_8_SHIFT		0
 
 /* Registers for function LED_PWM */
 #define PALMAS_LED_PERIOD_CTRL					0x0
 #define PALMAS_LED_CTRL						0x1
 #define PALMAS_PWM_CTRL1					0x2
 #define PALMAS_PWM_CTRL2					0x3
+#define PALMAS_LED_PERIOD2_CTRL					0x4
+#define PALMAS_LED_CTRL2					0x5
+#define PALMAS_LED_CURRENT_CTRL1				0x6
+#define PALMAS_LED_CURRENT_CTRL2				0x7
+#define PALMAS_CHRG_LED_CTRL					0x8
+#define PALMAS_LED_EN						0x9
 
 /* Bit definitions for LED_PERIOD_CTRL */
 #define PALMAS_LED_PERIOD_CTRL_LED_2_PERIOD_MASK		0x38
@@ -1876,6 +2462,50 @@ enum usb_irq_events {
 #define PALMAS_PWM_CTRL2_PWM_DUTY_SEL_MASK			0xff
 #define PALMAS_PWM_CTRL2_PWM_DUTY_SEL_SHIFT			0
 
+/* Bit definitions for LED_PERIOD2_CTRL */
+#define PALMAS_LED_PERIOD2_CTRL_CHRG_LED_PERIOD_MASK		0x38
+#define PALMAS_LED_PERIOD2_CTRL_CHRG_LED_PERIOD_SHIFT		3
+#define PALMAS_LED_PERIOD2_CTRL_LED_3_PERIOD_MASK		0x07
+#define PALMAS_LED_PERIOD2_CTRL_LED_3_PERIOD_SHIFT		0
+
+/* Bit definitions for LED_CTRL2 */
+#define PALMAS_LED_CTRL2_CHRG_LED_SEQ				0x20
+#define PALMAS_LED_CTRL2_CHRG_LED_SEQ_SHIFT			5
+#define PALMAS_LED_CTRL2_LED_3_SEQ				0x10
+#define PALMAS_LED_CTRL2_LED_3_SEQ_SHIFT			4
+#define PALMAS_LED_CTRL2_CHRG_LED_ON_TIME_MASK			0x0c
+#define PALMAS_LED_CTRL2_CHRG_LED_ON_TIME_SHIFT			2
+#define PALMAS_LED_CTRL2_LED_3_ON_TIME_MASK			0x03
+#define PALMAS_LED_CTRL2_LED_3_ON_TIME_SHIFT			0
+
+/* Bit definitions for LED_CURRENT_CTRL1 */
+#define PALMAS_LED_CURRENT_CTRL1_LED_2_CURRENT_MASK		0x38
+#define PALMAS_LED_CURRENT_CTRL1_LED_2_CURRENT_SHIFT		3
+#define PALMAS_LED_CURRENT_CTRL1_LED_1_CURRENT_MASK		0x07
+#define PALMAS_LED_CURRENT_CTRL1_LED_1_CURRENT_SHIFT		0
+
+/* Bit definitions for LED_CURRENT_CTRL2 */
+#define PALMAS_LED_CURRENT_CTRL2_LED_3_CURRENT_MASK		0x07
+#define PALMAS_LED_CURRENT_CTRL2_LED_3_CURRENT_SHIFT		0
+
+/* Bit definitions for CHRG_LED_CTRL */
+#define PALMAS_CHRG_LED_CTRL_CHRG_LED_CURRENT_MASK		0x38
+#define PALMAS_CHRG_LED_CTRL_CHRG_LED_CURRENT_SHIFT		3
+#define PALMAS_CHRG_LED_CTRL_CHRG_LOWBAT_BLK_DIS		0x02
+#define PALMAS_CHRG_LED_CTRL_CHRG_LOWBAT_BLK_DIS_SHIFT		1
+#define PALMAS_CHRG_LED_CTRL_CHRG_LED_MODE			0x01
+#define PALMAS_CHRG_LED_CTRL_CHRG_LED_MODE_SHIFT		0
+
+/* Bit definitions for LED_EN */
+#define PALMAS_LED_EN_CHRG_LED_EN				0x08
+#define PALMAS_LED_EN_CHRG_LED_EN_SHIFT				3
+#define PALMAS_LED_EN_LED_3_EN					0x04
+#define PALMAS_LED_EN_LED_3_EN_SHIFT				2
+#define PALMAS_LED_EN_LED_2_EN					0x02
+#define PALMAS_LED_EN_LED_2_EN_SHIFT				1
+#define PALMAS_LED_EN_LED_1_EN					0x01
+#define PALMAS_LED_EN_LED_1_EN_SHIFT				0
+
 /* Registers for function INTERRUPT */
 #define PALMAS_INT1_STATUS					0x0
 #define PALMAS_INT1_MASK					0x1
@@ -1898,6 +2528,16 @@ enum usb_irq_events {
 #define PALMAS_INT4_EDGE_DETECT1				0x12
 #define PALMAS_INT4_EDGE_DETECT2				0x13
 #define PALMAS_INT_CTRL						0x14
+#define PALMAS_INT5_STATUS					0x15
+#define PALMAS_INT5_MASK					0x16
+#define PALMAS_INT5_LINE_STATE					0x17
+#define PALMAS_INT5_EDGE_DETECT1				0x18
+#define PALMAS_INT5_EDGE_DETECT2				0x19
+#define PALMAS_INT6_STATUS					0x1A
+#define PALMAS_INT6_MASK					0x1B
+#define PALMAS_INT6_LINE_STATE					0x1C
+#define PALMAS_INT6_EDGE_DETECT1_RESERVED			0x1D
+#define PALMAS_INT6_EDGE_DETECT2_RESERVED			0x1E
 
 /* Bit definitions for INT1_STATUS */
 #define PALMAS_INT1_STATUS_VBAT_MON				0x80
@@ -2157,6 +2797,285 @@ enum usb_irq_events {
 #define PALMAS_INT_CTRL_INT_CLEAR				0x01
 #define PALMAS_INT_CTRL_INT_CLEAR_SHIFT				0
 
+/* Bit definitions for INT5_STATUS */
+#define PALMAS_INT5_STATUS_GPIO_15				0x80
+#define PALMAS_INT5_STATUS_GPIO_15_SHIFT			7
+#define PALMAS_INT5_STATUS_GPIO_14				0x40
+#define PALMAS_INT5_STATUS_GPIO_14_SHIFT			6
+#define PALMAS_INT5_STATUS_GPIO_12				0x10
+#define PALMAS_INT5_STATUS_GPIO_12_SHIFT			4
+#define PALMAS_INT5_STATUS_GPIO_11				0x08
+#define PALMAS_INT5_STATUS_GPIO_11_SHIFT			3
+#define PALMAS_INT5_STATUS_GPIO_10				0x04
+#define PALMAS_INT5_STATUS_GPIO_10_SHIFT			2
+#define PALMAS_INT5_STATUS_GPIO_9				0x02
+#define PALMAS_INT5_STATUS_GPIO_9_SHIFT				1
+#define PALMAS_INT5_STATUS_GPIO_8				0x01
+#define PALMAS_INT5_STATUS_GPIO_8_SHIFT				0
+
+/* Bit definitions for INT5_MASK */
+#define PALMAS_INT5_MASK_GPIO_15				0x80
+#define PALMAS_INT5_MASK_GPIO_15_SHIFT				7
+#define PALMAS_INT5_MASK_GPIO_14				0x40
+#define PALMAS_INT5_MASK_GPIO_14_SHIFT				6
+#define PALMAS_INT5_MASK_GPIO_12				0x10
+#define PALMAS_INT5_MASK_GPIO_12_SHIFT				4
+#define PALMAS_INT5_MASK_GPIO_11				0x08
+#define PALMAS_INT5_MASK_GPIO_11_SHIFT				3
+#define PALMAS_INT5_MASK_GPIO_10				0x04
+#define PALMAS_INT5_MASK_GPIO_10_SHIFT				2
+#define PALMAS_INT5_MASK_GPIO_9					0x02
+#define PALMAS_INT5_MASK_GPIO_9_SHIFT				1
+#define PALMAS_INT5_MASK_GPIO_8					0x01
+#define PALMAS_INT5_MASK_GPIO_8_SHIFT				0
+
+/* Bit definitions for INT5_LINE_STATE */
+#define PALMAS_INT5_LINE_STATE_GPIO_15				0x80
+#define PALMAS_INT5_LINE_STATE_GPIO_15_SHIFT			7
+#define PALMAS_INT5_LINE_STATE_GPIO_14				0x40
+#define PALMAS_INT5_LINE_STATE_GPIO_14_SHIFT			6
+#define PALMAS_INT5_LINE_STATE_GPIO_12				0x10
+#define PALMAS_INT5_LINE_STATE_GPIO_12_SHIFT			4
+#define PALMAS_INT5_LINE_STATE_GPIO_11				0x08
+#define PALMAS_INT5_LINE_STATE_GPIO_11_SHIFT			3
+#define PALMAS_INT5_LINE_STATE_GPIO_10				0x04
+#define PALMAS_INT5_LINE_STATE_GPIO_10_SHIFT			2
+#define PALMAS_INT5_LINE_STATE_GPIO_9				0x02
+#define PALMAS_INT5_LINE_STATE_GPIO_9_SHIFT			1
+#define PALMAS_INT5_LINE_STATE_GPIO_8				0x01
+#define PALMAS_INT5_LINE_STATE_GPIO_8_SHIFT			0
+
+/* Bit definitions for INT5_EDGE_DETECT1 */
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_11_RISING			0x80
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_11_RISING_SHIFT		7
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_11_FALLING		0x40
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_11_FALLING_SHIFT		6
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_10_RISING			0x20
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_10_RISING_SHIFT		5
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_10_FALLING		0x10
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_10_FALLING_SHIFT		4
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_9_RISING			0x08
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_9_RISING_SHIFT		3
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_9_FALLING			0x04
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_9_FALLING_SHIFT		2
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_8_RISING			0x02
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_8_RISING_SHIFT		1
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_8_FALLING			0x01
+#define PALMAS_INT5_EDGE_DETECT1_GPIO_8_FALLING_SHIFT		0
+
+/* Bit definitions for INT5_EDGE_DETECT2 */
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_15_RISING			0x80
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_15_RISING_SHIFT		7
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_15_FALLING		0x40
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_15_FALLING_SHIFT		6
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_14_RISING			0x20
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_14_RISING_SHIFT		5
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_14_FALLING		0x10
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_14_FALLING_SHIFT		4
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_12_RISING			0x02
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_12_RISING_SHIFT		1
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_12_FALLING		0x01
+#define PALMAS_INT5_EDGE_DETECT2_GPIO_12_FALLING_SHIFT		0
+
+/* Bit definitions for INT6_STATUS */
+#define PALMAS_INT6_STATUS_SIM2					0x80
+#define PALMAS_INT6_STATUS_SIM2_SHIFT				7
+#define PALMAS_INT6_STATUS_SIM1					0x40
+#define PALMAS_INT6_STATUS_SIM1_SHIFT				6
+#define PALMAS_INT6_STATUS_CHARGER				0x20
+#define PALMAS_INT6_STATUS_CHARGER_SHIFT			5
+#define PALMAS_INT6_STATUS_CC_AUTOCAL				0x10
+#define PALMAS_INT6_STATUS_CC_AUTOCAL_SHIFT			4
+#define PALMAS_INT6_STATUS_CC_BAT_STABLE			0x08
+#define PALMAS_INT6_STATUS_CC_BAT_STABLE_SHIFT			3
+#define PALMAS_INT6_STATUS_CC_OVC_LIMIT				0x04
+#define PALMAS_INT6_STATUS_CC_OVC_LIMIT_SHIFT			2
+#define PALMAS_INT6_STATUS_CC_SYNC_EOC				0x02
+#define PALMAS_INT6_STATUS_CC_SYNC_EOC_SHIFT			1
+#define PALMAS_INT6_STATUS_CC_EOC				0x01
+#define PALMAS_INT6_STATUS_CC_EOC_SHIFT				0
+
+/* Bit definitions for INT6_MASK */
+#define PALMAS_INT6_MASK_SIM2					0x80
+#define PALMAS_INT6_MASK_SIM2_SHIFT				7
+#define PALMAS_INT6_MASK_SIM1					0x40
+#define PALMAS_INT6_MASK_SIM1_SHIFT				6
+#define PALMAS_INT6_MASK_CHARGER				0x20
+#define PALMAS_INT6_MASK_CHARGER_SHIFT				5
+#define PALMAS_INT6_MASK_CC_AUTOCAL				0x10
+#define PALMAS_INT6_MASK_CC_AUTOCAL_SHIFT			4
+#define PALMAS_INT6_MASK_CC_BAT_STABLE				0x08
+#define PALMAS_INT6_MASK_CC_BAT_STABLE_SHIFT			3
+#define PALMAS_INT6_MASK_CC_OVC_LIMIT				0x04
+#define PALMAS_INT6_MASK_CC_OVC_LIMIT_SHIFT			2
+#define PALMAS_INT6_MASK_CC_SYNC_EOC				0x02
+#define PALMAS_INT6_MASK_CC_SYNC_EOC_SHIFT			1
+#define PALMAS_INT6_MASK_CC_EOC					0x01
+#define PALMAS_INT6_MASK_CC_EOC_SHIFT				0
+
+/* Bit definitions for INT6_LINE_STATE */
+#define PALMAS_INT6_LINE_STATE_SIM2				0x80
+#define PALMAS_INT6_LINE_STATE_SIM2_SHIFT			7
+#define PALMAS_INT6_LINE_STATE_SIM1				0x40
+#define PALMAS_INT6_LINE_STATE_SIM1_SHIFT			6
+#define PALMAS_INT6_LINE_STATE_CHARGER				0x20
+#define PALMAS_INT6_LINE_STATE_CHARGER_SHIFT			5
+#define PALMAS_INT6_LINE_STATE_CC_AUTOCAL			0x10
+#define PALMAS_INT6_LINE_STATE_CC_AUTOCAL_SHIFT			4
+#define PALMAS_INT6_LINE_STATE_CC_BAT_STABLE			0x08
+#define PALMAS_INT6_LINE_STATE_CC_BAT_STABLE_SHIFT		3
+#define PALMAS_INT6_LINE_STATE_CC_OVC_LIMIT			0x04
+#define PALMAS_INT6_LINE_STATE_CC_OVC_LIMIT_SHIFT		2
+#define PALMAS_INT6_LINE_STATE_CC_SYNC_EOC			0x02
+#define PALMAS_INT6_LINE_STATE_CC_SYNC_EOC_SHIFT		1
+#define PALMAS_INT6_LINE_STATE_CC_EOC				0x01
+#define PALMAS_INT6_LINE_STATE_CC_EOC_SHIFT			0
+
+/* Registers for function FUEL_GAUGE */
+#define PALMAS_FG_REG_00					0x0
+#define PALMAS_FG_REG_01					0x1
+#define PALMAS_FG_REG_02					0x2
+#define PALMAS_FG_REG_03					0x3
+#define PALMAS_FG_REG_04					0x4
+#define PALMAS_FG_REG_05					0x5
+#define PALMAS_FG_REG_06					0x6
+#define PALMAS_FG_REG_07					0x7
+#define PALMAS_FG_REG_08					0x8
+#define PALMAS_FG_REG_09					0x9
+#define PALMAS_FG_REG_10					0xA
+#define PALMAS_FG_REG_11					0xB
+#define PALMAS_FG_REG_12					0xC
+#define PALMAS_FG_REG_13					0xD
+#define PALMAS_FG_REG_14					0xE
+#define PALMAS_FG_REG_15					0xF
+#define PALMAS_FG_REG_16					0x10
+#define PALMAS_FG_REG_17					0x11
+#define PALMAS_FG_REG_18					0x12
+#define PALMAS_FG_REG_19					0x13
+#define PALMAS_FG_REG_20					0x14
+#define PALMAS_FG_REG_21					0x15
+#define PALMAS_FG_REG_22					0x16
+
+/* Bit definitions for FG_REG_00 */
+#define PALMAS_FG_REG_00_CC_ACTIVE_MODE_MASK			0xc0
+#define PALMAS_FG_REG_00_CC_ACTIVE_MODE_SHIFT			6
+#define PALMAS_FG_REG_00_CC_BAT_STABLE_EN			0x20
+#define PALMAS_FG_REG_00_CC_BAT_STABLE_EN_SHIFT			5
+#define PALMAS_FG_REG_00_CC_DITH_EN				0x10
+#define PALMAS_FG_REG_00_CC_DITH_EN_SHIFT			4
+#define PALMAS_FG_REG_00_CC_FG_EN				0x08
+#define PALMAS_FG_REG_00_CC_FG_EN_SHIFT				3
+#define PALMAS_FG_REG_00_CC_AUTOCLEAR				0x04
+#define PALMAS_FG_REG_00_CC_AUTOCLEAR_SHIFT			2
+#define PALMAS_FG_REG_00_CC_CAL_EN				0x02
+#define PALMAS_FG_REG_00_CC_CAL_EN_SHIFT			1
+#define PALMAS_FG_REG_00_CC_PAUSE				0x01
+#define PALMAS_FG_REG_00_CC_PAUSE_SHIFT				0
+
+/* Bit definitions for FG_REG_01 */
+#define PALMAS_FG_REG_01_CC_SAMPLE_CNTR_MASK			0xff
+#define PALMAS_FG_REG_01_CC_SAMPLE_CNTR_SHIFT			0
+
+/* Bit definitions for FG_REG_02 */
+#define PALMAS_FG_REG_02_CC_SAMPLE_CNTR_MASK			0xff
+#define PALMAS_FG_REG_02_CC_SAMPLE_CNTR_SHIFT			0
+
+/* Bit definitions for FG_REG_03 */
+#define PALMAS_FG_REG_03_CC_SAMPLE_CNTR_MASK			0xff
+#define PALMAS_FG_REG_03_CC_SAMPLE_CNTR_SHIFT			0
+
+/* Bit definitions for FG_REG_04 */
+#define PALMAS_FG_REG_04_CC_ACCUM_MASK				0xff
+#define PALMAS_FG_REG_04_CC_ACCUM_SHIFT				0
+
+/* Bit definitions for FG_REG_05 */
+#define PALMAS_FG_REG_05_CC_ACCUM_MASK				0xff
+#define PALMAS_FG_REG_05_CC_ACCUM_SHIFT				0
+
+/* Bit definitions for FG_REG_06 */
+#define PALMAS_FG_REG_06_CC_ACCUM_MASK				0xff
+#define PALMAS_FG_REG_06_CC_ACCUM_SHIFT				0
+
+/* Bit definitions for FG_REG_07 */
+#define PALMAS_FG_REG_07_CC_ACCUM_MASK				0xff
+#define PALMAS_FG_REG_07_CC_ACCUM_SHIFT				0
+
+/* Bit definitions for FG_REG_08 */
+#define PALMAS_FG_REG_08_CC_OFFSET_MASK				0xff
+#define PALMAS_FG_REG_08_CC_OFFSET_SHIFT			0
+
+/* Bit definitions for FG_REG_09 */
+#define PALMAS_FG_REG_09_CC_OFFSET_MASK				0x03
+#define PALMAS_FG_REG_09_CC_OFFSET_SHIFT			0
+
+/* Bit definitions for FG_REG_10 */
+#define PALMAS_FG_REG_10_CC_INTEG_MASK				0xff
+#define PALMAS_FG_REG_10_CC_INTEG_SHIFT				0
+
+/* Bit definitions for FG_REG_11 */
+#define PALMAS_FG_REG_11_CC_INTEG_MASK				0x3f
+#define PALMAS_FG_REG_11_CC_INTEG_SHIFT				0
+
+/* Bit definitions for FG_REG_12 */
+#define PALMAS_FG_REG_12_CC_VBAT_SYNC_MASK			0xfc
+#define PALMAS_FG_REG_12_CC_VBAT_SYNC_SHIFT			2
+#define PALMAS_FG_REG_12_CC_SYNC_EN				0x02
+#define PALMAS_FG_REG_12_CC_SYNC_EN_SHIFT			1
+#define PALMAS_FG_REG_12_CC_SYNC_RDY				0x01
+#define PALMAS_FG_REG_12_CC_SYNC_RDY_SHIFT			0
+
+/* Bit definitions for FG_REG_13 */
+#define PALMAS_FG_REG_13_CC_VBAT_SYNC_MASK			0x3f
+#define PALMAS_FG_REG_13_CC_VBAT_SYNC_SHIFT			0
+
+/* Bit definitions for FG_REG_14 */
+#define PALMAS_FG_REG_14_CC_VBAT_CNTR_MASK			0xff
+#define PALMAS_FG_REG_14_CC_VBAT_CNTR_SHIFT			0
+
+/* Bit definitions for FG_REG_15 */
+#define PALMAS_FG_REG_15_CC_VBAT_CNTR_MASK			0x03
+#define PALMAS_FG_REG_15_CC_VBAT_CNTR_SHIFT			0
+
+/* Bit definitions for FG_REG_16 */
+#define PALMAS_FG_REG_16_CC_VBAT_ACCUM_MASK			0xff
+#define PALMAS_FG_REG_16_CC_VBAT_ACCUM_SHIFT			0
+
+/* Bit definitions for FG_REG_17 */
+#define PALMAS_FG_REG_17_CC_VBAT_ACCUM_MASK			0xff
+#define PALMAS_FG_REG_17_CC_VBAT_ACCUM_SHIFT			0
+
+/* Bit definitions for FG_REG_18 */
+#define PALMAS_FG_REG_18_CC_VBAT_ACCUM_MASK			0x3f
+#define PALMAS_FG_REG_18_CC_VBAT_ACCUM_SHIFT			0
+
+/* Bit definitions for FG_REG_19 */
+#define PALMAS_FG_REG_19_CC_CUR_LVL_MASK			0x3f
+#define PALMAS_FG_REG_19_CC_CUR_LVL_SHIFT			0
+
+/* Bit definitions for FG_REG_20 */
+#define PALMAS_FG_REG_20_BAT_SLEEP_STATUS			0x40
+#define PALMAS_FG_REG_20_BAT_SLEEP_STATUS_SHIFT			6
+#define PALMAS_FG_REG_20_CC_BAT_SLEEP_PERIOD_MASK		0x30
+#define PALMAS_FG_REG_20_CC_BAT_SLEEP_PERIOD_SHIFT		4
+#define PALMAS_FG_REG_20_CC_BAT_SLEEP_EXIT_MASK			0x0c
+#define PALMAS_FG_REG_20_CC_BAT_SLEEP_EXIT_SHIFT		2
+#define PALMAS_FG_REG_20_CC_BAT_SLEEP_ENTER_MASK		0x03
+#define PALMAS_FG_REG_20_CC_BAT_SLEEP_ENTER_SHIFT		0
+
+/* Bit definitions for FG_REG_21 */
+#define PALMAS_FG_REG_21_CC_OVERCUR_THRES_MASK			0x7f
+#define PALMAS_FG_REG_21_CC_OVERCUR_THRES_SHIFT			0
+
+/* Bit definitions for FG_REG_22 */
+#define PALMAS_FG_REG_22_CC_CHOPPER_DIS				0x80
+#define PALMAS_FG_REG_22_CC_CHOPPER_DIS_SHIFT			7
+#define PALMAS_FG_REG_22_CC_NSLEEP_GATE				0x08
+#define PALMAS_FG_REG_22_CC_NSLEEP_GATE_SHIFT			3
+#define PALMAS_FG_REG_22_CC_OVC_EN				0x04
+#define PALMAS_FG_REG_22_CC_OVC_EN_SHIFT			2
+#define PALMAS_FG_REG_22_CC_OVC_PER_MASK			0x03
+#define PALMAS_FG_REG_22_CC_OVC_PER_SHIFT			0
+
 /* Registers for function ID */
 #define PALMAS_VENDOR_ID_LSB					0x0
 #define PALMAS_VENDOR_ID_MSB					0x1
@@ -2180,30 +3099,30 @@ enum usb_irq_events {
 #define PALMAS_PRODUCT_ID_MSB_PRODUCT_ID_SHIFT			0
 
 /* Registers for function USB_OTG */
-#define PALMAS_USB_WAKEUP					0x3
-#define PALMAS_USB_VBUS_CTRL_SET				0x4
-#define PALMAS_USB_VBUS_CTRL_CLR				0x5
-#define PALMAS_USB_ID_CTRL_SET					0x6
-#define PALMAS_USB_ID_CTRL_CLEAR				0x7
-#define PALMAS_USB_VBUS_INT_SRC					0x8
-#define PALMAS_USB_VBUS_INT_LATCH_SET				0x9
-#define PALMAS_USB_VBUS_INT_LATCH_CLR				0xA
-#define PALMAS_USB_VBUS_INT_EN_LO_SET				0xB
-#define PALMAS_USB_VBUS_INT_EN_LO_CLR				0xC
-#define PALMAS_USB_VBUS_INT_EN_HI_SET				0xD
-#define PALMAS_USB_VBUS_INT_EN_HI_CLR				0xE
-#define PALMAS_USB_ID_INT_SRC					0xF
-#define PALMAS_USB_ID_INT_LATCH_SET				0x10
-#define PALMAS_USB_ID_INT_LATCH_CLR				0x11
-#define PALMAS_USB_ID_INT_EN_LO_SET				0x12
-#define PALMAS_USB_ID_INT_EN_LO_CLR				0x13
-#define PALMAS_USB_ID_INT_EN_HI_SET				0x14
-#define PALMAS_USB_ID_INT_EN_HI_CLR				0x15
-#define PALMAS_USB_OTG_ADP_CTRL					0x16
-#define PALMAS_USB_OTG_ADP_HIGH					0x17
-#define PALMAS_USB_OTG_ADP_LOW					0x18
-#define PALMAS_USB_OTG_ADP_RISE					0x19
-#define PALMAS_USB_OTG_REVISION					0x1A
+#define PALMAS_USB_WAKEUP					0x0
+#define PALMAS_USB_VBUS_CTRL_SET				0x1
+#define PALMAS_USB_VBUS_CTRL_CLR				0x2
+#define PALMAS_USB_ID_CTRL_SET					0x3
+#define PALMAS_USB_ID_CTRL_CLEAR				0x4
+#define PALMAS_USB_VBUS_INT_SRC					0x5
+#define PALMAS_USB_VBUS_INT_LATCH_SET				0x6
+#define PALMAS_USB_VBUS_INT_LATCH_CLR				0x7
+#define PALMAS_USB_VBUS_INT_EN_LO_SET				0x8
+#define PALMAS_USB_VBUS_INT_EN_LO_CLR				0x9
+#define PALMAS_USB_VBUS_INT_EN_HI_SET				0xA
+#define PALMAS_USB_VBUS_INT_EN_HI_CLR				0xB
+#define PALMAS_USB_ID_INT_SRC					0xC
+#define PALMAS_USB_ID_INT_LATCH_SET				0xD
+#define PALMAS_USB_ID_INT_LATCH_CLR				0xE
+#define PALMAS_USB_ID_INT_EN_LO_SET				0xF
+#define PALMAS_USB_ID_INT_EN_LO_CLR				0x10
+#define PALMAS_USB_ID_INT_EN_HI_SET				0x11
+#define PALMAS_USB_ID_INT_EN_HI_CLR				0x12
+#define PALMAS_USB_OTG_ADP_CTRL					0x13
+#define PALMAS_USB_OTG_ADP_HIGH					0x14
+#define PALMAS_USB_OTG_ADP_LOW					0x15
+#define PALMAS_USB_OTG_ADP_RISE					0x16
+#define PALMAS_USB_OTG_REVISION					0x17
 
 /* Bit definitions for USB_WAKEUP */
 #define PALMAS_USB_WAKEUP_ID_WK_UP_COMP				0x01
@@ -2487,6 +3406,43 @@ enum usb_irq_events {
 #define PALMAS_USB_OTG_REVISION_OTG_REV				0x01
 #define PALMAS_USB_OTG_REVISION_OTG_REV_SHIFT			0
 
+/* Registers for function INTERRUPT2 */
+#define PALMAS_INT7_STATUS					0x0
+#define PALMAS_INT7_MASK					0x1
+#define PALMAS_INT7_LINE_STATE					0x2
+#define PALMAS_INT7_EDGE_DETECT1_RESERVED			0x3
+#define PALMAS_INT7_EDGE_DETECT2_RESERVED			0x4
+
+/* Bit definitions for INT7_STATUS */
+#define PALMAS_INT7_STATUS_SPARE_MASK				0xf8
+#define PALMAS_INT7_STATUS_SPARE_SHIFT				3
+#define PALMAS_INT7_STATUS_BAT_TEMP_FAULT			0x04
+#define PALMAS_INT7_STATUS_BAT_TEMP_FAULT_SHIFT			2
+#define PALMAS_INT7_STATUS_CHRG_IN_ANTICOLLAPSE			0x02
+#define PALMAS_INT7_STATUS_CHRG_IN_ANTICOLLAPSE_SHIFT		1
+#define PALMAS_INT7_STATUS_BAT_CONTACT_BREAK			0x01
+#define PALMAS_INT7_STATUS_BAT_CONTACT_BREAK_SHIFT		0
+
+/* Bit definitions for INT7_MASK */
+#define PALMAS_INT7_MASK_SPARE_MASK				0xf8
+#define PALMAS_INT7_MASK_SPARE_SHIFT				3
+#define PALMAS_INT7_MASK_BAT_TEMP_FAULT				0x04
+#define PALMAS_INT7_MASK_BAT_TEMP_FAULT_SHIFT			2
+#define PALMAS_INT7_MASK_CHRG_IN_ANTICOLLAPSE			0x02
+#define PALMAS_INT7_MASK_CHRG_IN_ANTICOLLAPSE_SHIFT		1
+#define PALMAS_INT7_MASK_BAT_CONTACT_BREAK			0x01
+#define PALMAS_INT7_MASK_BAT_CONTACT_BREAK_SHIFT		0
+
+/* Bit definitions for INT7_LINE_STATE */
+#define PALMAS_INT7_LINE_STATE_SPARE_MASK			0xf8
+#define PALMAS_INT7_LINE_STATE_SPARE_SHIFT			3
+#define PALMAS_INT7_LINE_STATE_BAT_TEMP_FAULT			0x04
+#define PALMAS_INT7_LINE_STATE_BAT_TEMP_FAULT_SHIFT		2
+#define PALMAS_INT7_LINE_STATE_CHRG_IN_ANTICOLLAPSE		0x02
+#define PALMAS_INT7_LINE_STATE_CHRG_IN_ANTICOLLAPSE_SHIFT	1
+#define PALMAS_INT7_LINE_STATE_BAT_CONTACT_BREAK		0x01
+#define PALMAS_INT7_LINE_STATE_BAT_CONTACT_BREAK_SHIFT		0
+
 /* Registers for function VIBRATOR */
 #define PALMAS_VIBRA_CTRL					0x0
 
@@ -2506,6 +3462,16 @@ enum usb_irq_events {
 #define PALMAS_PU_PD_GPIO_CTRL1					0x6
 #define PALMAS_PU_PD_GPIO_CTRL2					0x7
 #define PALMAS_OD_OUTPUT_GPIO_CTRL				0x8
+#define PALMAS_GPIO_DATA_IN2					0x9
+#define PALMAS_GPIO_DATA_DIR2					0xA
+#define PALMAS_GPIO_DATA_OUT2					0xB
+#define PALMAS_GPIO_DEBOUNCE_EN2				0xC
+#define PALMAS_GPIO_CLEAR_DATA_OUT2				0xD
+#define PALMAS_GPIO_SET_DATA_OUT2				0xE
+#define PALMAS_PU_PD_GPIO_CTRL3					0xF
+#define PALMAS_PU_PD_GPIO_CTRL4					0x10
+#define PALMAS_OD_OUTPUT_GPIO_CTRL2				0x11
+#define PALMAS_GPO_CTRL						0x12
 
 /* Bit definitions for GPIO_DATA_IN */
 #define PALMAS_GPIO_DATA_IN_GPIO_7_IN				0x80
@@ -2653,6 +3619,128 @@ enum usb_irq_events {
 #define PALMAS_OD_OUTPUT_GPIO_CTRL_GPIO_1_OD			0x02
 #define PALMAS_OD_OUTPUT_GPIO_CTRL_GPIO_1_OD_SHIFT		1
 
+/* Bit definitions for GPIO_DATA_IN2 */
+#define PALMAS_GPIO_DATA_IN2_GPIO_15_IN				0x80
+#define PALMAS_GPIO_DATA_IN2_GPIO_15_IN_SHIFT			7
+#define PALMAS_GPIO_DATA_IN2_GPIO_14_IN				0x40
+#define PALMAS_GPIO_DATA_IN2_GPIO_14_IN_SHIFT			6
+#define PALMAS_GPIO_DATA_IN2_GPIO_12_IN				0x10
+#define PALMAS_GPIO_DATA_IN2_GPIO_12_IN_SHIFT			4
+#define PALMAS_GPIO_DATA_IN2_GPIO_11_IN				0x08
+#define PALMAS_GPIO_DATA_IN2_GPIO_11_IN_SHIFT			3
+#define PALMAS_GPIO_DATA_IN2_GPIO_10_IN				0x04
+#define PALMAS_GPIO_DATA_IN2_GPIO_10_IN_SHIFT			2
+#define PALMAS_GPIO_DATA_IN2_GPIO_9_IN				0x02
+#define PALMAS_GPIO_DATA_IN2_GPIO_9_IN_SHIFT			1
+#define PALMAS_GPIO_DATA_IN2_GPIO_8_IN				0x01
+#define PALMAS_GPIO_DATA_IN2_GPIO_8_IN_SHIFT			0
+
+/* Bit definitions for GPIO_DATA_DIR2 */
+#define PALMAS_GPIO_DATA_DIR2_GPIO_15_DIR			0x80
+#define PALMAS_GPIO_DATA_DIR2_GPIO_15_DIR_SHIFT			7
+#define PALMAS_GPIO_DATA_DIR2_GPIO_14_DIR			0x40
+#define PALMAS_GPIO_DATA_DIR2_GPIO_14_DIR_SHIFT			6
+#define PALMAS_GPIO_DATA_DIR2_GPIO_12_DIR			0x10
+#define PALMAS_GPIO_DATA_DIR2_GPIO_12_DIR_SHIFT			4
+#define PALMAS_GPIO_DATA_DIR2_GPIO_11_DIR			0x08
+#define PALMAS_GPIO_DATA_DIR2_GPIO_11_DIR_SHIFT			3
+#define PALMAS_GPIO_DATA_DIR2_GPIO_10_DIR			0x04
+#define PALMAS_GPIO_DATA_DIR2_GPIO_10_DIR_SHIFT			2
+#define PALMAS_GPIO_DATA_DIR2_GPIO_9_DIR			0x02
+#define PALMAS_GPIO_DATA_DIR2_GPIO_9_DIR_SHIFT			1
+#define PALMAS_GPIO_DATA_DIR2_GPIO_8_DIR			0x01
+#define PALMAS_GPIO_DATA_DIR2_GPIO_8_DIR_SHIFT			0
+
+/* Bit definitions for GPIO_DATA_OUT2 */
+#define PALMAS_GPIO_DATA_OUT2_GPIO_15_OUT			0x80
+#define PALMAS_GPIO_DATA_OUT2_GPIO_15_OUT_SHIFT			7
+#define PALMAS_GPIO_DATA_OUT2_GPIO_14_OUT			0x40
+#define PALMAS_GPIO_DATA_OUT2_GPIO_14_OUT_SHIFT			6
+#define PALMAS_GPIO_DATA_OUT2_GPIO_12_OUT			0x10
+#define PALMAS_GPIO_DATA_OUT2_GPIO_12_OUT_SHIFT			4
+#define PALMAS_GPIO_DATA_OUT2_GPIO_11_OUT			0x08
+#define PALMAS_GPIO_DATA_OUT2_GPIO_11_OUT_SHIFT			3
+#define PALMAS_GPIO_DATA_OUT2_GPIO_10_OUT			0x04
+#define PALMAS_GPIO_DATA_OUT2_GPIO_10_OUT_SHIFT			2
+#define PALMAS_GPIO_DATA_OUT2_GPIO_9_OUT			0x02
+#define PALMAS_GPIO_DATA_OUT2_GPIO_9_OUT_SHIFT			1
+#define PALMAS_GPIO_DATA_OUT2_GPIO_8_OUT			0x01
+#define PALMAS_GPIO_DATA_OUT2_GPIO_8_OUT_SHIFT			0
+
+/* Bit definitions for GPIO_DEBOUNCE_EN2 */
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_15_DEBOUNCE_EN		0x80
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_15_DEBOUNCE_EN_SHIFT	7
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_14_DEBOUNCE_EN		0x40
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_14_DEBOUNCE_EN_SHIFT	6
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_12_DEBOUNCE_EN		0x10
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_12_DEBOUNCE_EN_SHIFT	4
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_11_DEBOUNCE_EN		0x08
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_11_DEBOUNCE_EN_SHIFT	3
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_10_DEBOUNCE_EN		0x04
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_10_DEBOUNCE_EN_SHIFT	2
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_9_DEBOUNCE_EN		0x02
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_9_DEBOUNCE_EN_SHIFT	1
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_8_DEBOUNCE_EN		0x01
+#define PALMAS_GPIO_DEBOUNCE_EN2_GPIO_8_DEBOUNCE_EN_SHIFT	0
+
+/* Bit definitions for GPIO_CLEAR_DATA_OUT2 */
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_15_CLEAR_DATA_OUT	0x80
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_15_CLEAR_DATA_OUT_SHIFT7
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_14_CLEAR_DATA_OUT	0x40
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_14_CLEAR_DATA_OUT_SHIFT6
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_12_CLEAR_DATA_OUT	0x10
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_12_CLEAR_DATA_OUT_SHIFT4
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_11_CLEAR_DATA_OUT	0x08
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_11_CLEAR_DATA_OUT_SHIFT3
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_10_CLEAR_DATA_OUT	0x04
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_10_CLEAR_DATA_OUT_SHIFT2
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_9_CLEAR_DATA_OUT	0x02
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_9_CLEAR_DATA_OUT_SHIFT	1
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_8_CLEAR_DATA_OUT	0x01
+#define PALMAS_GPIO_CLEAR_DATA_OUT2_GPIO_8_CLEAR_DATA_OUT_SHIFT	0
+
+/* Bit definitions for GPIO_SET_DATA_OUT2 */
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_15_SET_DATA_OUT		0x80
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_15_SET_DATA_OUT_SHIFT	7
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_14_SET_DATA_OUT		0x40
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_14_SET_DATA_OUT_SHIFT	6
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_12_SET_DATA_OUT		0x10
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_12_SET_DATA_OUT_SHIFT	4
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_11_SET_DATA_OUT		0x08
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_11_SET_DATA_OUT_SHIFT	3
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_10_SET_DATA_OUT		0x04
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_10_SET_DATA_OUT_SHIFT	2
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_9_SET_DATA_OUT		0x02
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_9_SET_DATA_OUT_SHIFT	1
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_8_SET_DATA_OUT		0x01
+#define PALMAS_GPIO_SET_DATA_OUT2_GPIO_8_SET_DATA_OUT_SHIFT	0
+
+/* Bit definitions for PU_PD_GPIO_CTRL3 */
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_11_PD			0x40
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_11_PD_SHIFT		6
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_10_PU			0x20
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_10_PU_SHIFT		5
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_10_PD			0x10
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_10_PD_SHIFT		4
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_9_PU			0x08
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_9_PU_SHIFT			3
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_9_PD			0x04
+#define PALMAS_PU_PD_GPIO_CTRL3_GPIO_9_PD_SHIFT			2
+
+/* Bit definitions for PU_PD_GPIO_CTRL4 */
+#define PALMAS_PU_PD_GPIO_CTRL4_GPIO_14_PU			0x20
+#define PALMAS_PU_PD_GPIO_CTRL4_GPIO_14_PU_SHIFT		5
+#define PALMAS_PU_PD_GPIO_CTRL4_GPIO_14_PD			0x10
+#define PALMAS_PU_PD_GPIO_CTRL4_GPIO_14_PD_SHIFT		4
+
+/* Bit definitions for OD_OUTPUT_GPIO_CTRL2 */
+#define PALMAS_OD_OUTPUT_GPIO_CTRL2_GPIO_10_OD			0x04
+#define PALMAS_OD_OUTPUT_GPIO_CTRL2_GPIO_10_OD_SHIFT		2
+
+/* Bit definitions for GPO_CTRL */
+#define PALMAS_GPO_CTRL_GPO_OUT					0x01
+#define PALMAS_GPO_CTRL_GPO_OUT_SHIFT				0
+
 /* Registers for function GPADC */
 #define PALMAS_GPADC_CTRL1					0x0
 #define PALMAS_GPADC_CTRL2					0x1
@@ -2676,6 +3764,7 @@ enum usb_irq_events {
 #define PALMAS_GPADC_THRES_CONV1_MSB				0x13
 #define PALMAS_GPADC_SMPS_ILMONITOR_EN				0x14
 #define PALMAS_GPADC_SMPS_VSEL_MONITORING			0x15
+#define PALMAS_GPADC_BUFFER_SEL					0x16
 
 /* Bit definitions for GPADC_CTRL1 */
 #define PALMAS_GPADC_CTRL1_RESERVED_MASK			0xc0
@@ -2692,6 +3781,8 @@ enum usb_irq_events {
 /* Bit definitions for GPADC_CTRL2 */
 #define PALMAS_GPADC_CTRL2_RESERVED_MASK			0x06
 #define PALMAS_GPADC_CTRL2_RESERVED_SHIFT			1
+#define PALMAS_GPADC_CTRL2_GPADC_TEMP_EN			0x01
+#define PALMAS_GPADC_CTRL2_GPADC_TEMP_EN_SHIFT			0
 
 /* Bit definitions for GPADC_RT_CTRL */
 #define PALMAS_GPADC_RT_CTRL_EXTEND_DELAY			0x02
@@ -2788,10 +3879,14 @@ enum usb_irq_events {
 #define PALMAS_GPADC_THRES_CONV1_MSB_THRES_CONV1_MSB_SHIFT	0
 
 /* Bit definitions for GPADC_SMPS_ILMONITOR_EN */
+#define PALMAS_GPADC_SMPS_ILMONITOR_EN_SMPS_COMPMODE		0x40
+#define PALMAS_GPADC_SMPS_ILMONITOR_EN_SMPS_COMPMODE_SHIFT	6
 #define PALMAS_GPADC_SMPS_ILMONITOR_EN_SMPS_ILMON_EN		0x20
 #define PALMAS_GPADC_SMPS_ILMONITOR_EN_SMPS_ILMON_EN_SHIFT	5
 #define PALMAS_GPADC_SMPS_ILMONITOR_EN_SMPS_ILMON_REXT		0x10
 #define PALMAS_GPADC_SMPS_ILMONITOR_EN_SMPS_ILMON_REXT_SHIFT	4
+#define PALMASCH_GPADC_SMPS_ILMONITOR_EN_SMPS_ILMON_VADC_MEAS_EN	0x10
+#define PALMASCH_GPADC_SMPS_ILMONITOR_EN_SMPS_ILMON_VADC_MEAS_EN_SHIFT	4
 #define PALMAS_GPADC_SMPS_ILMONITOR_EN_SMPS_ILMON_SEL_MASK	0x0f
 #define PALMAS_GPADC_SMPS_ILMONITOR_EN_SMPS_ILMON_SEL_SHIFT	0
 
@@ -2801,14 +3896,32 @@ enum usb_irq_events {
 #define PALMAS_GPADC_SMPS_VSEL_MONITORING_SMPS_VSEL_MONITORING_MASK	0x7f
 #define PALMAS_GPADC_SMPS_VSEL_MONITORING_SMPS_VSEL_MONITORING_SHIFT	0
 
+/* Bit definitions for GPADC_BUFFER_SEL */
+#define PALMAS_GPADC_BUFFER_SEL_CH9_BUF_EN			0x80
+#define PALMAS_GPADC_BUFFER_SEL_CH9_BUF_EN_SHIFT		7
+#define PALMAS_GPADC_BUFFER_SEL_CH8_BUF_EN			0x40
+#define PALMAS_GPADC_BUFFER_SEL_CH8_BUF_EN_SHIFT		6
+#define PALMAS_GPADC_BUFFER_SEL_CH6_BUF_EN			0x20
+#define PALMAS_GPADC_BUFFER_SEL_CH6_BUF_EN_SHIFT		5
+#define PALMAS_GPADC_BUFFER_SEL_CH5_BUF_EN			0x10
+#define PALMAS_GPADC_BUFFER_SEL_CH5_BUF_EN_SHIFT		4
+#define PALMAS_GPADC_BUFFER_SEL_CH4_BUF_EN			0x08
+#define PALMAS_GPADC_BUFFER_SEL_CH4_BUF_EN_SHIFT		3
+#define PALMAS_GPADC_BUFFER_SEL_CH3_BUF_EN			0x04
+#define PALMAS_GPADC_BUFFER_SEL_CH3_BUF_EN_SHIFT		2
+#define PALMAS_GPADC_BUFFER_SEL_CH1_BUF_EN			0x02
+#define PALMAS_GPADC_BUFFER_SEL_CH1_BUF_EN_SHIFT		1
+#define PALMAS_GPADC_BUFFER_SEL_CH0_BUF_EN			0x01
+#define PALMAS_GPADC_BUFFER_SEL_CH0_BUF_EN_SHIFT		0
+
 /* Registers for function DESIGNREV */
-#define PALMAS_DESIGNREV					0x0
+#define PALMAS_DESIGNREV                                        0x0
 
 /* Bit definitions for DESIGNREV */
-#define PALMAS_DESIGNREV_DESIGNREV_MASK				0x0f
-#define PALMAS_DESIGNREV_DESIGNREV_SHIFT			0
+#define PALMAS_DESIGNREV_DESIGNREV_MASK                         0x0f
+#define PALMAS_DESIGNREV_DESIGNREV_SHIFT                        0
 
-/* Registers for function GPADC */
+/* Registers for function TRIM_GPADC */
 #define PALMAS_GPADC_TRIM1					0x0
 #define PALMAS_GPADC_TRIM2					0x1
 #define PALMAS_GPADC_TRIM3					0x2
@@ -2825,5 +3938,132 @@ enum usb_irq_events {
 #define PALMAS_GPADC_TRIM14					0xD
 #define PALMAS_GPADC_TRIM15					0xE
 #define PALMAS_GPADC_TRIM16					0xF
+#define PALMAS_GPADC_TRIM17					0x10
+#define PALMAS_GPADC_TRIM18					0x11
+
+/* Registers for function BQ24192 */
+#define PALMAS_REG00						0x0
+#define PALMAS_REG01						0x1
+#define PALMAS_REG02						0x2
+#define PALMAS_REG03						0x3
+#define PALMAS_REG04						0x4
+#define PALMAS_REG05						0x5
+#define PALMAS_REG06						0x6
+#define PALMAS_REG07						0x7
+#define PALMAS_REG08						0x8
+#define PALMAS_REG09						0x9
+#define PALMAS_REG10						0xA
+
+/* Bit definitions for REG00 */
+#define PALMAS_REG00_EN_HIZ					0x80
+#define PALMAS_REG00_EN_HIZ_SHIFT				7
+#define PALMAS_REG00_VINDPM_MASK				0x78
+#define PALMAS_REG00_VINDPM_SHIFT				3
+#define PALMAS_REG00_IINLIM_MASK				0x07
+#define PALMAS_REG00_IINLIM_SHIFT				0
+
+/* Bit definitions for REG01 */
+#define PALMAS_REG01_REGISTER_RESET				0x80
+#define PALMAS_REG01_REGISTER_RESET_SHIFT			7
+#define PALMAS_REG01_I2C_WATCHDOG_TIMER_RESET			0x40
+#define PALMAS_REG01_I2C_WATCHDOG_TIMER_RESET_SHIFT		6
+#define PALMAS_REG01_CHG_CONFIG_MASK				0x30
+#define PALMAS_REG01_CHG_CONFIG_SHIFT				4
+#define PALMAS_REG01_SYS_MIN_MASK				0x0e
+#define PALMAS_REG01_SYS_MIN_SHIFT				1
+#define PALMAS_REG01_BOOST_LIM					0x01
+#define PALMAS_REG01_BOOST_LIM_SHIFT				0
+
+/* Bit definitions for REG02 */
+#define PALMAS_REG02_ICHG_MASK					0xfc
+#define PALMAS_REG02_ICHG_SHIFT					2
+#define PALMAS_REG02_RESERVED_MASK				0x03
+#define PALMAS_REG02_RESERVED_SHIFT				0
+
+/* Bit definitions for REG03 */
+#define PALMAS_REG03_IPRECHG_MASK				0xf0
+#define PALMAS_REG03_IPRECHG_SHIFT				4
+#define PALMAS_REG03_ITERM_MASK					0x0f
+#define PALMAS_REG03_ITERM_SHIFT				0
+
+/* Bit definitions for REG04 */
+#define PALMAS_REG04_VREG_MASK					0xfc
+#define PALMAS_REG04_VREG_SHIFT					2
+#define PALMAS_REG04_BATLOWV					0x02
+#define PALMAS_REG04_BATLOWV_SHIFT				1
+#define PALMAS_REG04_VRECHG					0x01
+#define PALMAS_REG04_VRECHG_SHIFT				0
+
+/* Bit definitions for REG05 */
+#define PALMAS_REG05_EN_TERM					0x80
+#define PALMAS_REG05_EN_TERM_SHIFT				7
+#define PALMAS_REG05_TERM_STAT					0x40
+#define PALMAS_REG05_TERM_STAT_SHIFT				6
+#define PALMAS_REG05_WATCHDOG_MASK				0x30
+#define PALMAS_REG05_WATCHDOG_SHIFT				4
+#define PALMAS_REG05_EN_TIMER					0x08
+#define PALMAS_REG05_EN_TIMER_SHIFT				3
+#define PALMAS_REG05_CHG_TIMER_MASK				0x06
+#define PALMAS_REG05_CHG_TIMER_SHIFT				1
+#define PALMAS_REG05_JEITA_ISET					0x01
+#define PALMAS_REG05_JEITA_ISET_SHIFT				0
+
+/* Bit definitions for REG06 */
+#define PALMAS_REG06_BAT_COMP_MASK				0xe0
+#define PALMAS_REG06_BAT_COMP_SHIFT				5
+#define PALMAS_REG06_VCLAMP_MASK				0x1c
+#define PALMAS_REG06_VCLAMP_SHIFT				2
+#define PALMAS_REG06_TREG_MASK					0x03
+#define PALMAS_REG06_TREG_SHIFT					0
+
+/* Bit definitions for REG07 */
+#define PALMAS_REG07_DPDM_EN					0x80
+#define PALMAS_REG07_DPDM_EN_SHIFT				7
+#define PALMAS_REG07_TMR2X_EN					0x40
+#define PALMAS_REG07_TMR2X_EN_SHIFT				6
+#define PALMAS_REG07_BATFET_DISABLE				0x20
+#define PALMAS_REG07_BATFET_DISABLE_SHIFT			5
+#define PALMAS_REG07_JEITA_VSET					0x10
+#define PALMAS_REG07_JEITA_VSET_SHIFT				4
+#define PALMAS_REG07_RESERVED_MASK				0x0c
+#define PALMAS_REG07_RESERVED_SHIFT				2
+#define PALMAS_REG07_INT_MASK					0x02
+#define PALMAS_REG07_INT_MASK_SHIFT				1
+#define PALMAS_REG07_INT_MAST					0x01
+#define PALMAS_REG07_INT_MAST_SHIFT				0
+
+/* Bit definitions for REG08 */
+#define PALMAS_REG08_VBUS_STAT_MASK				0xc0
+#define PALMAS_REG08_VBUS_STAT_SHIFT				6
+#define PALMAS_REG08_CHRG_STAT_MASK				0x30
+#define PALMAS_REG08_CHRG_STAT_SHIFT				4
+#define PALMAS_REG08_DPM_STAT					0x08
+#define PALMAS_REG08_DPM_STAT_SHIFT				3
+#define PALMAS_REG08_PG_STAT					0x04
+#define PALMAS_REG08_PG_STAT_SHIFT				2
+#define PALMAS_REG08_THERM_STAT					0x02
+#define PALMAS_REG08_THERM_STAT_SHIFT				1
+#define PALMAS_REG08_VSYS_STAT					0x01
+#define PALMAS_REG08_VSYS_STAT_SHIFT				0
+
+/* Bit definitions for REG09 */
+#define PALMAS_REG09_WATCHDOG_FAULT				0x80
+#define PALMAS_REG09_WATCHDOG_FAULT_SHIFT			7
+#define PALMAS_REG09_OTG_FAULT					0x40
+#define PALMAS_REG09_OTG_FAULT_SHIFT				6
+#define PALMAS_REG09_CHRG_FAULT_MASK				0x30
+#define PALMAS_REG09_CHRG_FAULT_SHIFT				4
+#define PALMAS_REG09_BAT_FAULT					0x08
+#define PALMAS_REG09_BAT_FAULT_SHIFT				3
+#define PALMAS_REG09_CHARGE_GATED_MASK				0x07
+#define PALMAS_REG09_CHARGE_GATED_SHIFT				0
+
+/* Bit definitions for REG10 */
+#define PALMAS_REG10_PN_MASK					0x38
+#define PALMAS_REG10_PN_SHIFT					3
+#define PALMAS_REG10_TS_PROFILE					0x04
+#define PALMAS_REG10_TS_PROFILE_SHIFT				2
+#define PALMAS_REG10_RESERVED_MASK				0x03
+#define PALMAS_REG10_RESERVED_SHIFT				0
 
 #endif /*  __LINUX_MFD_PALMAS_H */
