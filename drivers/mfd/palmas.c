@@ -165,15 +165,6 @@ static void __devinit palmas_dt_to_pdata(struct device_node *node,
 		pdata->mux_from_pdata = 1;
 		pdata->pad4 = prop;
 	}
-
-	/* The default for this register is all masked */
-	ret = of_property_read_u32(node, "ti,power_ctrl", &prop);
-	if (!ret)
-		pdata->power_ctrl = prop;
-	else
-		pdata->power_ctrl = PALMAS_POWER_CTRL_NSLEEP_MASK |
-					PALMAS_POWER_CTRL_ENABLE1_MASK |
-					PALMAS_POWER_CTRL_ENABLE2_MASK;
 }
 
 static int __devinit palmas_i2c_regmap(struct palmas *palmas, int i2c_start,
@@ -427,15 +418,6 @@ static int __devinit palmas_i2c_probe(struct i2c_client *i2c,
 	dev_info(palmas->dev, "Muxing GPIO %x, PWM %x, LED %x\n",
 			palmas->gpio_muxed, palmas->pwm_muxed,
 			palmas->led_muxed);
-
-	reg = pdata->power_ctrl;
-
-	slave = PALMAS_BASE_TO_SLAVE(PALMAS_PMU_CONTROL_BASE);
-	addr = PALMAS_BASE_TO_REG(PALMAS_PMU_CONTROL_BASE, PALMAS_POWER_CTRL);
-
-	ret = regmap_write(palmas->regmap[slave], addr, reg);
-	if (ret)
-		goto err_irq;
 
 	/*
 	 * If we are probing with DT do this the DT way and return here

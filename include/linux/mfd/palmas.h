@@ -294,9 +294,6 @@ struct palmas_charger_platform_data {
 struct palmas_platform_data {
 	int gpio_base;
 
-	/* bit value to be loaded to the POWER_CTRL register */
-	u8 power_ctrl;
-
 	/*
 	 * boolean to select if we want to configure muxing here
 	 * then the two value to load into the registers if true

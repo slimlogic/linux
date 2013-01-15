@@ -271,7 +271,8 @@ static int palmas_initialise_resource(struct palmas_resource *resource,
 		struct palmas_resource_platform_data *pdata)
 {
 	int ret;
-	unsigned int reg;
+	unsigned int reg, addr;
+	int slave;
 
 	if (pdata->regen1_mode_sleep) {
 		ret = palmas_resource_read(resource->palmas,
@@ -416,6 +417,28 @@ static int palmas_initialise_resource(struct palmas_resource *resource,
 		if (ret)
 			return ret;
 	}
+
+	reg = PALMAS_POWER_CTRL_NSLEEP_MASK | PALMAS_POWER_CTRL_ENABLE1_MASK |
+	      PALMAS_POWER_CTRL_ENABLE2_MASK;
+	if (pdata->nsleep_res || pdata->nsleep_smps || pdata->nsleep_ldo1
+			|| pdata->nsleep_ldo2)
+		reg &= ~PALMAS_POWER_CTRL_NSLEEP_MASK;
+
+	if (pdata->enable1_res || pdata->enable1_smps || pdata->enable1_ldo1
+			|| pdata->enable1_ldo2)
+		reg &= ~PALMAS_POWER_CTRL_ENABLE1_MASK;
+
+	if (pdata->enable2_res || pdata->enable2_smps || pdata->enable2_ldo1
+			|| pdata->enable2_ldo2)
+		reg &= ~PALMAS_POWER_CTRL_ENABLE2_MASK;
+
+	slave = PALMAS_BASE_TO_SLAVE(PALMAS_PMU_CONTROL_BASE);
+	addr = PALMAS_BASE_TO_REG(PALMAS_PMU_CONTROL_BASE, PALMAS_POWER_CTRL);
+
+	ret = regmap_write(resource->palmas->regmap[slave], addr, reg);
+	if (ret)
+		dev_dbg(resource->dev, "%s: Error writing to POWER_CTRL!!\n",
+			__func__);
 
 	return ret;
 }
