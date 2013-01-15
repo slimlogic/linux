@@ -484,6 +484,37 @@ static int palmas_set_voltage_smps_sel(struct regulator_dev *dev,
 	return 0;
 }
 
+static int palmas_suspend_enable_smps(struct regulator_dev *dev)
+{
+	struct palmas_pmic *pmic = rdev_get_drvdata(dev);
+	int id = rdev_get_id(dev);
+	unsigned int reg;
+
+	palmas_smps_read(pmic->palmas, palmas_regs_info[id].ctrl_addr, &reg);
+
+	reg &= ~PALMAS_SMPS12_CTRL_MODE_SLEEP_MASK;
+	reg |= SMPS_CTRL_MODE_ON << PALMAS_SMPS12_CTRL_MODE_SLEEP_SHIFT;
+
+	palmas_smps_write(pmic->palmas, palmas_regs_info[id].ctrl_addr, reg);
+
+	return 0;
+}
+
+static int palmas_suspend_disable_smps(struct regulator_dev *dev)
+{
+	struct palmas_pmic *pmic = rdev_get_drvdata(dev);
+	int id = rdev_get_id(dev);
+	unsigned int reg;
+
+	palmas_smps_read(pmic->palmas, palmas_regs_info[id].ctrl_addr, &reg);
+
+	reg &= ~PALMAS_SMPS12_CTRL_MODE_SLEEP_MASK;
+
+	palmas_smps_write(pmic->palmas, palmas_regs_info[id].ctrl_addr, reg);
+
+	return 0;
+}
+
 static int palmas_map_voltage_smps(struct regulator_dev *rdev,
 		int min_uV, int max_uV)
 {
@@ -552,6 +583,8 @@ static struct regulator_ops palmas_ops_smps = {
 	.set_voltage_sel	= palmas_set_voltage_smps_sel,
 	.list_voltage		= palmas_list_voltage_smps,
 	.map_voltage		= palmas_map_voltage_smps,
+	.set_suspend_enable	= palmas_suspend_enable_smps,
+	.set_suspend_disable	= palmas_suspend_disable_smps,
 };
 
 /* @brief set or clear the bypass bit on SMPS10
