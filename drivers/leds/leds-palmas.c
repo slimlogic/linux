@@ -20,6 +20,7 @@
 #include <linux/err.h>
 #include <linux/mfd/palmas.h>
 #include <linux/module.h>
+#include <linux/of.h>
 
 struct palmas_leds_data;
 
@@ -344,11 +345,53 @@ static void palmas_init_led(struct palmas_leds_data *leds_data, int offset,
 	leds_data->palmas_led[offset].cdev.blink_set = palmas_leds_blink_set;
 }
 
+static int __devinit palmas_dt_to_pdata(struct device *dev,
+		struct device_node *node,
+		struct palmas_leds_platform_data *pdata)
+{
+	struct device_node *child_node;
+	int ret;
+	u32 prop;
+
+	child_node = of_get_child_by_name(node, "palmas_leds");
+	if (!child_node) {
+		dev_err(dev, "child node 'palmas_leds' not found\n");
+		return -EINVAL;
+	}
+
+	ret = of_property_read_u32(child_node, "ti,led1_current", &prop);
+	if (!ret)
+		pdata->led1_current = prop;
+
+	ret = of_property_read_u32(child_node, "ti,led2_current", &prop);
+	if (!ret)
+		pdata->led2_current = prop;
+
+	ret = of_property_read_u32(child_node, "ti,led3_current", &prop);
+	if (!ret)
+		pdata->led3_current = prop;
+
+	ret = of_property_read_u32(child_node, "ti,led4_current", &prop);
+	if (!ret)
+		pdata->led4_current = prop;
+
+	ret = of_property_read_u32(child_node, "ti,chrg_led_mode", &prop);
+	if (!ret)
+		pdata->chrg_led_mode = prop;
+
+	ret = of_property_read_u32(child_node, "ti,chrg_led_vbat_low", &prop);
+	if (!ret)
+		pdata->chrg_led_vbat_low = prop;
+
+	return 0;
+}
+
 static int palmas_leds_probe(struct platform_device *pdev)
 {
 	struct palmas *palmas = dev_get_drvdata(pdev->dev.parent);
 	struct palmas_leds_platform_data *pdata = pdev->dev.platform_data;
 	struct palmas_leds_data *leds_data;
+	struct device_node *node = pdev->dev.of_node;
 	int ret, i;
 	int offset = 0;
 
@@ -358,6 +401,17 @@ static int palmas_leds_probe(struct platform_device *pdev)
 	}
 
 	/* Palmas charger requires platform data */
+	if (is_palmas_charger(palmas->id) && node && !pdata) {
+		pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+
+		if (!pdata)
+			return -ENOMEM;
+
+		ret = palmas_dt_to_pdata(&pdev->dev, node, pdata);
+		if (ret)
+			return ret;
+	}
+
 	if (is_palmas_charger(palmas->id) && !pdata)
 		return -EINVAL;
 
